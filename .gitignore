@@ -1,0 +1,5 @@
+/ohmyosi
+/dist/
+*.pcap
+.DS_Store
+*.pcapng
