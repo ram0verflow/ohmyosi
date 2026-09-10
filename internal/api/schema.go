@@ -9,7 +9,20 @@ package api
 import (
 	"ohmyosi/internal/enrich"
 	"ohmyosi/internal/flow"
+	"ohmyosi/internal/rules"
+	"ohmyosi/internal/score"
 )
+
+func reasonsOf(r score.Result) []string {
+	if len(r.Signals) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(r.Signals))
+	for _, s := range r.Signals {
+		out = append(out, s.Reason)
+	}
+	return out
+}
 
 // Envelope is one message. Two types:
 //
@@ -26,6 +39,23 @@ type Envelope struct {
 	Flows []FlowView    `json:"flows,omitempty"`
 	Gone  []string      `json:"gone,omitempty"` // flow IDs that expired
 	Stats *Stats        `json:"stats,omitempty"`
+	// Alerts are moments worth interrupting for: a flow crossing into a loud
+	// band, or a genuinely new process/destination pair. Emitted at most once
+	// per flow so a UI can raise a banner without polling for them.
+	Alerts []Alert `json:"alerts,omitempty"`
+}
+
+// Alert is one thing that just became worth a person's attention. It carries
+// enough to show a banner without a lookup, and the same reasons the score
+// already exposes, because an alert with no argument is one you cannot trust.
+type Alert struct {
+	FlowID  string   `json:"flow_id"`
+	Comm    string   `json:"comm"`
+	Dest    string   `json:"dest"`
+	Score   int      `json:"score"`
+	Band    string   `json:"band"`
+	Reasons []string `json:"reasons,omitempty"`
+	T       float64  `json:"t"`
 }
 
 type Host struct {
@@ -66,6 +96,14 @@ type Endpoint struct {
 	// Favicon is a file name under /favicons/, present only when favicon
 	// fetching is enabled and the site had one.
 	Favicon string `json:"favicon,omitempty"`
+
+	// ASN is the autonomous system owning this address (Team Cymru DNS lookup).
+	ASN     uint32 `json:"asn,omitempty"`
+	ASNOrg  string `json:"asn_org,omitempty"`
+	Country string `json:"country,omitempty"`
+
+	// Trail records how each fact was learned, in investigation order.
+	Trail []string `json:"trail,omitempty"`
 }
 
 // FlowView is one connection as the UI sees it.
@@ -88,9 +126,8 @@ type FlowView struct {
 	LastSeen  float64 `json:"last_seen"`
 	State     string  `json:"state"` // new | active | closed
 	Self      bool    `json:"self"`  // ohmyosi's own traffic; hide by default
-	// PreExisting marks a TCP flow whose handshake we never saw, because it was
-	// already open when the daemon started. It is why the name is missing, and
-	// saying so beats an unexplained blank.
+	// PreExisting marks a flow that existed before the daemon started (seeded
+	// from lsof) or whose TCP handshake we never witnessed.
 	PreExisting bool `json:"pre_existing,omitempty"`
 	// DirectIP means the machine never told us where it was going: no TLS SNI,
 	// and no DNS answer we witnessed pointing at this address. Everything we
@@ -102,6 +139,29 @@ type FlowView struct {
 	// connections, where the destination itself is only an intermediary and
 	// these are the endpoints the machine actually wanted.
 	Queries []string `json:"queries,omitempty"`
+	// JA4 is the TLS client fingerprint of the software that opened this flow,
+	// read from the ClientHello. It names the caller rather than the callee and
+	// survives ECH, so it is the identity signal that remains when the SNI is
+	// encrypted away. Empty for flows with no ClientHello we could read.
+	JA4 string `json:"ja4,omitempty"`
+	// FirstContact is true the first time this process is seen reaching this
+	// destination, judged against an on-disk history. Presentation, not a
+	// verdict: it says "this is new", nothing more.
+	FirstContact bool `json:"first_contact,omitempty"`
+
+	// Suspicion is 0-100 with a band and the reasons behind it. Never a bare
+	// number: a score you cannot argue with is a score you cannot trust.
+	Suspicion     int      `json:"suspicion"`
+	SuspicionBand string   `json:"suspicion_band,omitempty"`
+	Reasons       []string `json:"reasons,omitempty"`
+
+	// Blocked is true when a rule denies this flow. Enforced says whether the
+	// block was actually applied (pf/hosts) or is only what the rule *would* do,
+	// shown when enforcement is off so a rule can be checked before it bites.
+	// Rule is a short description of what matched.
+	Blocked  bool   `json:"blocked,omitempty"`
+	Enforced bool   `json:"enforced,omitempty"`
+	Rule     string `json:"rule,omitempty"`
 }
 
 type Stats struct {
@@ -125,21 +185,40 @@ type Stats struct {
 	// watching on its own: it is where anything deliberately quiet would sit.
 	DirectIP int `json:"direct_ip"`
 	Prefixes int `json:"prefixes"` // size of the loaded allocation table
+	// Flows currently scoring in each band, so the header can show whether
+	// anything wants attention without the user hunting for it.
+	Notable int `json:"notable"`
+	Unusual int `json:"unusual"`
+	Loud    int `json:"loud"`
 }
 
 // View renders a flow for the wire. The remote endpoint is assembled by the
-// daemon, which owns the enrichment caches.
-func View(f flow.Flow, remote Endpoint) FlowView {
-	return FlowView{
-		ID: f.ID, Proto: string(f.Proto), PID: f.PID, Comm: f.Comm, Iface: f.Iface,
+// daemon, which owns the enrichment caches. firstContact says whether this
+// process/destination pair is new against the on-disk history; dec is the rule
+// verdict and enforced whether a block was actually applied.
+func View(f flow.Flow, remote Endpoint, verdict score.Result, firstContact bool, dec rules.Decision, enforced bool) FlowView {
+	hostSrc := remote.HostSrc
+	v := FlowView{
+		ID: f.ID, Proto: string(f.Proto), PID: f.DisplayPID(), Comm: f.DisplayComm(), Iface: f.Iface,
 		Local:       Endpoint{IP: f.Local.Addr().String(), Port: f.Local.Port()},
 		Remote:      remote,
-		PreExisting: f.Proto == "tcp" && !f.SawSYN,
-		DirectIP:    remote.HostSrc != "sni" && remote.HostSrc != "dns",
-		BytesUp:   f.BytesUp, BytesDown: f.BytesDown,
-		PktsUp:    f.PktsUp, PktsDown: f.PktsDown,
+		PreExisting: f.PreExisting,
+		DirectIP:    hostSrc != "sni" && hostSrc != "dns" && hostSrc != "http",
+		BytesUp:     f.BytesUp, BytesDown: f.BytesDown,
+		PktsUp: f.PktsUp, PktsDown: f.PktsDown,
 		FirstSeen: float64(f.FirstSeen.UnixNano()) / 1e9,
 		LastSeen:  float64(f.LastSeen.UnixNano()) / 1e9,
-		State: string(f.State), Self: f.Self, Queries: f.Queries,
+		State:     string(f.State), Self: f.Self, Queries: f.Queries,
+		JA4: f.JA4, FirstContact: firstContact,
+		Suspicion: verdict.Score, SuspicionBand: verdict.Band,
+		Reasons: reasonsOf(verdict),
 	}
+	if dec.Blocked() {
+		v.Blocked = true
+		v.Enforced = enforced
+		if dec.Rule != nil {
+			v.Rule = string(dec.Rule.Scope) + " " + dec.Rule.Match
+		}
+	}
+	return v
 }

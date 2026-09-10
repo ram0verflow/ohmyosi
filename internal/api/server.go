@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"ohmyosi/internal/rules"
 )
 
 // Server fans one stream of envelopes out to any number of SSE clients.
@@ -19,6 +21,21 @@ type Server struct {
 	hello      func() Envelope // full state for a newly connected client
 	iconDir    string
 	faviconDir string
+
+	// Rules, when set, exposes /api/rules for a UI to read and edit block/allow
+	// rules. Nil leaves the endpoint unregistered - the daemon is observe-only.
+	Rules *rules.Set
+
+	// Action hooks. Each is wired by the daemon; a nil hook leaves its endpoint
+	// unregistered. Everything the tool can do is reachable here, so the app
+	// never needs the command line. The daemon checks root inside each hook.
+	IsRoot      bool
+	Enforcing   func() bool                  // current enforcement state
+	Enforce     func(on bool) error          // turn blocking on/off at runtime
+	ImportBlock func(string) (int, error)    // import a blocklist (category, URL or path)
+	SpoofMAC    func(string) (string, error) // randomise an interface's MAC
+	SetHostname func(string) error           // set the machine hostname
+	Interfaces  func() []string              // interfaces a MAC change makes sense for
 }
 
 func NewServer(hello func() Envelope, iconDir, faviconDir string) *Server {
@@ -30,6 +47,22 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/events", s.events)
 	mux.HandleFunc("/api/snapshot", s.snapshot)
+	if s.Rules != nil {
+		mux.HandleFunc("/api/rules", s.rules)
+	}
+	mux.HandleFunc("/api/status", s.status)
+	if s.Enforce != nil {
+		mux.HandleFunc("/api/enforce", s.enforce)
+	}
+	if s.ImportBlock != nil {
+		mux.HandleFunc("/api/blocklist", s.blocklist)
+	}
+	if s.SpoofMAC != nil {
+		mux.HandleFunc("/api/spoof-mac", s.spoofMAC)
+	}
+	if s.SetHostname != nil {
+		mux.HandleFunc("/api/hostname", s.hostname)
+	}
 	mux.Handle("/icons/", http.StripPrefix("/icons/", http.FileServer(http.Dir(s.iconDir))))
 	if s.faviconDir != "" {
 		mux.Handle("/favicons/", http.StripPrefix("/favicons/", http.FileServer(http.Dir(s.faviconDir))))
@@ -106,6 +139,169 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// rules serves the block/allow ruleset: GET lists, POST adds, DELETE removes by
+// ?id=. Kept small and CORS-open so the native app or a curl one-liner can drive
+// it. Enforcement of the rules happens in the daemon's tick loop, not here.
+func (s *Server) rules(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	switch r.Method {
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(s.Rules.List())
+	case http.MethodPost:
+		var rule rules.Rule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			http.Error(w, `{"error":"bad rule"}`, http.StatusBadRequest)
+			return
+		}
+		if rule.Action == "" {
+			rule.Action = rules.Block
+		}
+		rule.Enabled = true // a rule someone just added is one they want on
+		added, err := s.Rules.Add(rule)
+		if err != nil {
+			http.Error(w, `{"error":"could not save"}`, http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(added)
+	case http.MethodDelete:
+		// Delete a single rule by id, or a whole imported category by note.
+		if note := r.URL.Query().Get("note"); note != "" {
+			n, err := s.Rules.RemoveByNote(note)
+			if err != nil {
+				http.Error(w, `{"error":"could not save"}`, http.StatusInternalServerError)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]int{"removed": n})
+			return
+		}
+		id := r.URL.Query().Get("id")
+		removed, err := s.Rules.Remove(id)
+		if err != nil {
+			http.Error(w, `{"error":"could not save"}`, http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]bool{"removed": removed})
+	default:
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+// corsJSON sets the headers every small action endpoint shares and answers a
+// CORS preflight. Returns true if the request was a preflight already handled.
+func corsJSON(w http.ResponseWriter, r *http.Request) bool {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	return false
+}
+
+// status is what the app polls to know whether blocking is on, whether it is
+// allowed (root), and which interfaces a MAC change applies to.
+func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	if corsJSON(w, r) {
+		return
+	}
+	out := map[string]any{"root": s.IsRoot}
+	if s.Enforcing != nil {
+		out["enforcing"] = s.Enforcing()
+	}
+	if s.Interfaces != nil {
+		out["interfaces"] = s.Interfaces()
+	}
+	json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) enforce(w http.ResponseWriter, r *http.Request) {
+	if corsJSON(w, r) {
+		return
+	}
+	var body struct {
+		On bool `json:"on"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := s.Enforce(body.On); err != nil {
+		http.Error(w, `{"error":`+jsonString(err.Error())+`}`, http.StatusForbidden)
+		return
+	}
+	on := false
+	if s.Enforcing != nil {
+		on = s.Enforcing()
+	}
+	json.NewEncoder(w).Encode(map[string]bool{"enforcing": on})
+}
+
+func (s *Server) blocklist(w http.ResponseWriter, r *http.Request) {
+	if corsJSON(w, r) {
+		return
+	}
+	var body struct {
+		Src string `json:"src"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Src == "" {
+		http.Error(w, `{"error":"missing src"}`, http.StatusBadRequest)
+		return
+	}
+	n, err := s.ImportBlock(body.Src)
+	if err != nil {
+		http.Error(w, `{"error":`+jsonString(err.Error())+`}`, http.StatusBadGateway)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]int{"imported": n})
+}
+
+func (s *Server) spoofMAC(w http.ResponseWriter, r *http.Request) {
+	if corsJSON(w, r) {
+		return
+	}
+	var body struct {
+		Iface string `json:"iface"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Iface == "" {
+		body.Iface = "en0"
+	}
+	mac, err := s.SpoofMAC(body.Iface)
+	if err != nil {
+		http.Error(w, `{"error":`+jsonString(err.Error())+`}`, http.StatusForbidden)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"mac": mac})
+}
+
+func (s *Server) hostname(w http.ResponseWriter, r *http.Request) {
+	if corsJSON(w, r) {
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+		http.Error(w, `{"error":"missing name"}`, http.StatusBadRequest)
+		return
+	}
+	if err := s.SetHostname(body.Name); err != nil {
+		http.Error(w, `{"error":`+jsonString(err.Error())+`}`, http.StatusForbidden)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// jsonString quotes a string for embedding in a hand-built JSON error body.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
