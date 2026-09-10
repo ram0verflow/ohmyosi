@@ -54,6 +54,10 @@ type Flow struct {
 	PktsDown  uint64
 
 	SNI string // straight off the ClientHello, when we saw one
+	// JA4 is the TLS client fingerprint of whatever opened this connection,
+	// from the ClientHello. It names the software, not the destination, and it
+	// survives ECH - so it is the one identity signal left when the SNI is gone.
+	JA4 string
 	// SawSYN means we witnessed this connection being opened. When false, the
 	// flow predates the daemon: its handshake, and therefore its SNI, happened
 	// before we were watching. That is the honest explanation for most unnamed
@@ -69,6 +73,11 @@ type Flow struct {
 	// DNS lookups. A monitor that shows up in its own graph is funny once and
 	// noise forever, so the UI filters these by default.
 	Self bool
+
+	// PreExisting marks a TCP flow whose opening handshake we never saw,
+	// because it was already established when the daemon started. It is the
+	// honest reason such a flow has no SNI.
+	PreExisting bool
 
 	dirty bool
 }
@@ -181,6 +190,9 @@ func (t *Table) Observe(o *decode.Obs) {
 		f = &Flow{
 			Key: k, ID: flowID(k), FirstSeen: o.Ts,
 			State: StateNew, Self: o.PID > 0 && o.PID == t.selfPI,
+			// If the first packet we ever see on a TCP connection is not a
+			// SYN, the handshake happened before we were watching.
+			PreExisting: o.Proto == decode.TCP && !o.SYN,
 		}
 		t.flows[k] = f
 	} else if f.State == StateNew {
@@ -201,12 +213,22 @@ func (t *Table) Observe(o *decode.Obs) {
 	}
 	if o.EPID > 0 {
 		f.EPID, f.EComm = o.EPID, o.EComm
+		// ohmyosi's own lookups go out through mDNSResponder, so the socket PID
+		// is the resolver's and only the effective PID is ours. Without this,
+		// the tool's own DNS and RDAP traffic shows up unattributed and gets
+		// scored as if it were something to worry about.
+		if o.EPID == t.selfPI {
+			f.Self = true
+		}
 	}
 	if o.Iface != "" {
 		f.Iface = o.Iface
 	}
 	if o.SNI != "" {
 		f.SNI = o.SNI
+	}
+	if o.JA4 != "" {
+		f.JA4 = o.JA4
 	}
 
 	n := uint64(o.WireLen)
@@ -219,6 +241,7 @@ func (t *Table) Observe(o *decode.Obs) {
 	}
 	if o.SYN {
 		f.SawSYN = true
+		f.PreExisting = false
 	}
 	for _, q := range o.Questions {
 		f.addQuery(q)
@@ -243,6 +266,9 @@ func (t *Table) Now() time.Time {
 	}
 	return t.lastTs
 }
+
+// DisplayPID and DisplayComm live in attrib.go: crediting the effective PID
+// only for known system resolvers, not for every flow that happens to carry one.
 
 // maxQueries caps what one resolver flow remembers. A busy machine resolves
 // thousands of names; the recent ones are what make the flow readable, and an
@@ -311,6 +337,23 @@ func (t *Table) Expire(now time.Time) []string {
 	return gone
 }
 
+// Seed inserts a flow discovered outside capture (e.g. lsof at startup).
+func (t *Table) Seed(proto decode.Proto, local, remote netip.AddrPort, pid int32, comm string, sawSYN bool) {
+	o := &decode.Obs{
+		Ts: time.Now(), PID: pid, Comm: comm, Proto: proto,
+		Src: local.Addr(), Dst: remote.Addr(),
+		SPort: local.Port(), DPort: remote.Port(),
+		SYN: sawSYN,
+	}
+	t.Observe(o)
+	t.mu.Lock()
+	k := Key{Proto: proto, Local: local, Remote: remote}
+	if f, ok := t.flows[k]; ok && !sawSYN {
+		f.PreExisting = true
+	}
+	t.mu.Unlock()
+}
+
 // PIDs returns the distinct processes currently holding flows.
 func (t *Table) PIDs() []int32 {
 	t.mu.RLock()
@@ -318,9 +361,10 @@ func (t *Table) PIDs() []int32 {
 	seen := make(map[int32]bool, 32)
 	out := make([]int32, 0, 32)
 	for _, f := range t.flows {
-		if f.PID > 0 && !seen[f.PID] {
-			seen[f.PID] = true
-			out = append(out, f.PID)
+		pid := f.DisplayPID()
+		if pid > 0 && !seen[pid] {
+			seen[pid] = true
+			out = append(out, pid)
 		}
 	}
 	return out
