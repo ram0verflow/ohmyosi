@@ -3,3 +3,13 @@
 *.pcap
 .DS_Store
 *.pcapng
+web/node_modules/
+web/dist/
+mac/.build/
+mac/.asset-venv/
+mac/.usdzconvert/
+mac/Resources/macbook-pro.glb
+dist/
+dist/build.log
+Claude outputs/
+_to_delete/
