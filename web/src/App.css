@@ -1,0 +1,156 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #06080c;
+  color: #e6eaf2;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  border-bottom: 1px solid #1c2333;
+  background: linear-gradient(180deg, #121722 0%, #0c1018 100%);
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  font-size: 13px;
+  background: linear-gradient(135deg, #a8b4ff, #6ee7b7);
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f85149;
+  box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.4);
+}
+
+.dot.on {
+  background: #3fb950;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(63, 185, 80, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(63, 185, 80, 0);
+  }
+}
+
+.meta {
+  flex: 1;
+  color: #8b949e;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.toggle {
+  font-size: 11px;
+  color: #8b949e;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.stage {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  min-height: 0;
+}
+
+.canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.panel {
+  border-left: 1px solid #1c2333;
+  background: linear-gradient(180deg, #0e121a, #0a0d12);
+  padding: 16px;
+  overflow: auto;
+}
+
+.panel h2 {
+  margin: 0 0 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #8b949e;
+}
+
+.panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.panel li {
+  padding: 10px 0;
+  border-bottom: 1px solid #161b22;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+}
+
+.panel li:hover {
+  opacity: 0.85;
+}
+
+.panel li strong {
+  font-size: 12px;
+}
+
+.panel li span {
+  font-size: 11px;
+  color: #58a6ff;
+}
+
+.panel li small {
+  font-size: 10px;
+  color: #6e7681;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #21262d;
+}
+
+.detail h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.trail {
+  margin: 0 0 6px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: #8b949e;
+}
