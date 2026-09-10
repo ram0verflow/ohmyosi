@@ -1,0 +1,13 @@
+# ohmyosi example: a tiny adult-site blocklist in hosts format.
+#
+# This is a demonstration sample. For real coverage, import a maintained list:
+#   ohmyosi -import-blocklist https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts
+#
+# Import turns each line into a domain block rule; run with -enforce to apply
+# them via /etc/hosts (and pf), and remove them any time from the Rules panel.
+0.0.0.0 pornhub.com
+0.0.0.0 xvideos.com
+0.0.0.0 xnxx.com
+0.0.0.0 redtube.com
+0.0.0.0 youporn.com
+0.0.0.0 xhamster.com
