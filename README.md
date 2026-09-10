@@ -43,6 +43,16 @@ Root is required: `pktap` is privileged.
 -favicons         fetch site favicons (connects to each destination, cached)
 -ranges FILE      allocation table (default <cache>/ranges.json)
 -read FILE        replay a saved .pcap/.pcapng instead of capturing live (no root needed)
+-record FILE      write this session's findings to an NDJSON recording
+-play FILE        replay a recording (no root needed); -speed sets the rate
+-diff A,B         compare two recordings and print what changed, then exit
+-diff-limit N     entries printed per section of a diff (default 25)
+-rules FILE       block/allow rule file (default <cache>/rules.json)
+-enforce          apply block rules via pf and /etc/hosts (root; off by default)
+-import-blocklist SRC   import a hosts-format blocklist (file or http(s) URL) as
+                        domain block rules, then exit
+-spoof-mac IFACE  assign a random locally-administered MAC to IFACE, then exit (root)
+-set-hostname N   set the machine's hostname (all three macOS names), then exit (root)
 ```
 
 `pktap,all` is the default because it catches whatever is actually carrying
@@ -129,7 +139,54 @@ Everything shown about the far end is inference after the fact. Software diallin
 a hardcoded address looks exactly like this. It is counted in the header and
 badged in the table rather than left as an unexplained blank.
 
+### What changed since yesterday
+
+A live graph can only ever show now. The question people actually have about
+their own machine is comparative - *what is it doing today that it wasn't doing
+yesterday?* - and answering it needs two recordings and something that knows
+what a real difference looks like.
+
+```sh
+sudo ./ohmyosi -record ~/sessions/mon.ndjson      # yesterday
+sudo ./ohmyosi -record ~/sessions/tue.ndjson      # today
+./ohmyosi -diff ~/sessions/mon.ndjson,~/sessions/tue.ndjson
+```
+
+The unit of comparison is the **relationship** - which application talks to
+which destination - not the flow. Flow IDs are five-tuples, so every one of them
+is new tomorrow; diffing those reports several hundred "new connections" a day,
+which is the same as reporting nothing. Collapsing to app-to-destination pairs
+leaves the thing that is genuinely stable day to day.
+
+Destinations are identified at the coarsest honest level, and the report says
+which:
+
+| level | meaning |
+|---|---|
+| `[domain]` | reduced to a registrable domain: `api2.cursor.sh` becomes `cursor.sh` |
+| `[host]` | a name, but not one with a registrable domain (`nas.local`) |
+| `[network]` | no name at all; grouped by the AS that owns the address space |
+| `[address]` | no name and no AS - the bare address is everything we have |
+
+That grading is what keeps the diff usable. CDN addresses rotate constantly, so
+grouping unnamed destinations by their owning network is the only way a
+day-over-day comparison survives contact with Cloudflare - but it is coarse, and
+a `[network]`-level "new" entry is usually the same service on a different
+address. The report says so at the bottom rather than letting you assume
+otherwise.
+
+Nothing is recomputed. A recording holds the daemon's own conclusions - names,
+their sources, scores and the sentences behind them - and the diff compares
+those as recorded, so two runs over the same pair of files agree forever. That
+is what makes it usable as evidence rather than as a curiosity.
+
+It also reports what *stopped*. A process that was calling home yesterday and is
+silent today is a change too, and a one-sided report is a worse tool.
+
+`-json` gives the same thing as a document, for scripting.
+
 ### Replaying a capture
+
 
 Debugging live traffic is miserable because the input never repeats. Capture
 once, then replay as often as you like, with no root:
@@ -204,6 +261,138 @@ the machine is actually asking about.
 The same idea applies wherever one connection stands in for many. A browser is
 already handled by having one flow per site.
 
+## Suspicion, honestly
+
+Every flow carries a score, a band (`quiet` / `notable` / `unusual` / `loud`)
+and the list of reasons behind it. This is not malware detection and never
+claims to be: there is no threat feed, no signature, no model. It is a sum of
+properties that are individually unremarkable and collectively worth a look,
+and **every point carries a sentence saying why** — "no name was announced for
+this address", "the binary carries no code signature at all", "reconnects on a
+regular cadence". A number you cannot argue with is a number you cannot trust,
+so the reasons travel with it everywhere it is shown. See `internal/score`.
+
+The signals, all computed from what the tool already observes:
+
+- **Direct-IP and unidentified** — the machine went somewhere it never named.
+- **Beacon cadence** — repeated connections at a steady interval, the classic
+  shape of something checking in, measured scale-free so ten seconds and ten
+  minutes both read as regular.
+- **Domain age** — a name registered last Tuesday against one registered nine
+  years ago (needs `-rdap`).
+- **Code signature** — a binary that is unsigned or only ad-hoc signed. Anyone
+  can produce those, so they say nothing about where the code came from.
+- **Exfil shape** — a large upload, heavily one-directional, to a far end with
+  no name. A backup goes to a named service; this does not.
+- **First sighting** — a process reaching a destination it has never reached
+  before, judged against a small on-disk history (`<cache>/history.json`). On a
+  fresh install nothing is new, so this stays quiet until there is a history to
+  be new against.
+
+When a flow first crosses into `unusual` or `loud`, the daemon emits an
+`alert` on the event stream — once per flow — so a UI can raise a banner
+without polling. The native app surfaces all of this: a triage rail ranks the
+flows worth attention, loudest first, each unfolding into its reasons.
+
+## Fingerprinting the caller (JA4)
+
+The identity work above is about the far end. JA4 is about the near end: it
+fingerprints the **software making the call** from the shape of its ClientHello
+— the ordered cipher list, the extensions, the version, ALPN. Two things make
+it worth the parsing. It is stable per stack and version, so Chrome looks like
+Chrome every time and something homemade stands out against the handful of
+fingerprints real browsers produce. And it survives Encrypted Client Hello: as
+ECH removes the SNI, JA4 is one of the few signals left that says anything about
+who is talking. It is read from the same ClientHello as the SNI, over both TCP
+and QUIC, checked against hand-built vectors in `internal/decode/ja4_test.go`.
+
+It is presentation, not classification: ohmyosi ships no fingerprint database
+and makes no claim from a JA4 alone. It is one more fact next to the others, so
+a person can recognise the odd one out.
+
+## Blocking, honestly
+
+ohmyosi is observation-first: it never blocks unless you pass `-enforce`, and
+without it every rule still shows what it *would* do (flows come back flagged
+`blocked` but nothing is stopped), so a rule can be checked before it bites.
+
+Rules are `allow` or `block`, scoped by **app**, **domain**, **dest** (ip or
+ip:port) or **port**. Allow beats block, so a blanket "this app talks to
+nothing" can be carved out with a narrow "...except its update server". Rules
+live in `internal/rules`; edit them over `/api/rules`:
+
+```sh
+# block an app; block a tracker domain and everything under it
+curl -XPOST 127.0.0.1:7777/api/rules -d '{"scope":"app","match":"Spotify"}'
+curl -XPOST 127.0.0.1:7777/api/rules -d '{"scope":"domain","match":"doubleclick.net"}'
+curl 127.0.0.1:7777/api/rules            # list
+curl -XDELETE '127.0.0.1:7777/api/rules?id=<id>'
+```
+
+Enforcement uses the two things root can do on macOS **without a kernel
+extension or an Apple developer account** - the same price of admission as
+capture:
+
+- **`/etc/hosts`** for domain blocks: names are refused before a connection is
+  ever made, for every app at once. This is how the category blocklists work -
+  `-import-blocklist` pulls a hosts-format list (StevenBlack's ads/adult/malware
+  lists, say) straight into domain rules.
+- **`pf`** for the per-application case. A packet filter knows addresses and
+  ports, not that *this* connection belongs to Spotify and *that* one to a shell
+  in `/tmp`. ohmyosi knows, from pktap - so it takes an app rule and installs a
+  pf rule for the exact 5-tuple that app just opened. Other apps to the same
+  address are untouched. **This is the per-app control a NetworkExtension is
+  usually needed for, done with `sudo` alone.**
+
+The honest limit: pf blocking is **reactive**. It kills the connection right
+after the first packet rather than preventing the SYN, because ohmyosi has to
+see the flow to attribute it. A NetworkExtension prompts before the first
+packet; this does not. Different guarantee, and the price of needing no
+entitlement - know which one you have.
+
+pf enforcement loads an anchor named `ohmyosi`. So the rules in it are actually
+evaluated, ohmyosi references the anchor in `/etc/pf.conf` for you when
+enforcement turns on - inside its own markers, without disturbing Apple's lines
+or any reference you added yourself. Everything it writes is undone on exit or
+when you turn enforcement off: the `/etc/hosts` region is stripped, the anchor
+is flushed, the DNS cache is refreshed, and the `pf.conf` reference we added is
+removed. Nothing manual, and nothing left behind.
+
+Rules persist in `/Library/Application Support/ohmyosi/rules.json`, so a
+blocklist you import survives a reboot.
+
+**All of this is in the app.** The Controls panel (gear icon) turns enforcement
+on and off, imports category blocklists (adult, ads, gambling, social), and
+changes the MAC and hostname - no command line. The flags below still exist for
+scripting, but you never need them.
+
+**Testing the detector.** `internal/score/detection_test.go` is a benchmark of
+malicious vs ordinary traffic *shapes* (100% recall, 0 false alarms at the time
+of writing). `cmd/beacon-sim` is a benign generator - no exploit, no payload,
+just the traffic shape - that you point at a host you own to watch the score
+react live:
+
+```sh
+sudo ./ohmyosi
+go build -o /tmp/beacon-sim ./cmd/beacon-sim
+/tmp/beacon-sim -target <a-box-you-own>:4444 -every 10s -up 5MB -i-own-this-target
+```
+
+## Changing what you broadcast
+
+Before joining a network you do not trust, the two identifiers a machine hands
+out about itself are worth changing: its MAC address and its hostname. Both are
+ordinary root operations, done once and then the daemon exits:
+
+```sh
+sudo ./ohmyosi -spoof-mac en0          # random locally-administered MAC
+sudo ./ohmyosi -set-hostname "laptop"  # sets HostName, LocalHostName, ComputerName
+```
+
+The MAC is locally-administered and unicast (the correct shape for a spoof), and
+on Wi-Fi you rejoin the network for it to take effect. This is a deliberate
+action, never a background behaviour - nothing changes unless you ask.
+
 ## How it works
 
 ```
@@ -229,9 +418,12 @@ Packets fold into flows; the UI gets a delta once a second.
 
 - **ECH will make SNI go away.** As Encrypted Client Hello ships, that field
   stops being readable and reverse DNS is all that is left.
-- **DNS attribution lands on `mDNSResponder`.** Apps ask the system resolver, so
-  the lookup is not attributed to whoever wanted it. The `pth_epid` field in the
-  pktap header is the thread to pull on; not done yet.
+- **DNS attribution used to land on `mDNSResponder`.** Apps ask the system
+  resolver, so a lookup is not attributed to whoever wanted it. pktap's
+  *effective* PID (option `0x8003`, the `pth_epid` thread) is now carried
+  through and, for known system resolvers, credited in place of the socket
+  owner - so a lookup shows the app that wanted it, not the resolver. See
+  `internal/flow/attrib.go`.
 - **Browsers are one bucket.** All of Chrome's traffic goes through a single
   network helper process, so there is no per-tab attribution. Fixing that needs
   an extension or ingesting `chrome://net-export`.
