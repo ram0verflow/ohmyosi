@@ -45,10 +45,31 @@ const (
 
 // QUICSNI returns the server name from a QUIC Initial packet, or "".
 func QUICSNI(p []byte) string {
+	sni, _ := QUICInfo(p)
+	return sni
+}
+
+// QUICInfo returns both the server name and the JA4 client fingerprint from a
+// QUIC Initial. The ClientHello is decrypted once and read for both.
+func QUICInfo(p []byte) (sni, ja4 string) {
+	plain := quicDecryptInitial(p)
+	if plain == nil {
+		return "", ""
+	}
+	hs := cryptoHandshake(plain)
+	if hs == nil {
+		return "", ""
+	}
+	return parseSNIHandshake(hs), ja4FromHandshake(hs, 'q')
+}
+
+// quicDecryptInitial undoes header protection, derives the initial secrets and
+// decrypts the payload of a QUIC Initial, returning the plaintext frames or nil.
+func quicDecryptInitial(p []byte) []byte {
 	// Long header with the fixed bit set. The packet-type bits cannot be read
 	// yet, because v2 renumbered them.
 	if len(p) < 7 || p[0]&0xc0 != 0xc0 {
-		return ""
+		return nil
 	}
 	version := binary.BigEndian.Uint32(p[1:5])
 	var salt []byte
@@ -64,44 +85,44 @@ func QUICSNI(p []byte) string {
 		salt, initialType = initialSaltV2, 0x10
 		keyLabel, ivLabel, hpLabel = "quicv2 key", "quicv2 iv", "quicv2 hp"
 	default:
-		return "" // draft or unknown version
+		return nil // draft or unknown version
 	}
 	if p[0]&0x30 != initialType {
-		return "" // Handshake, 0-RTT or Retry: no readable ClientHello here
+		return nil // Handshake, 0-RTT or Retry: no readable ClientHello here
 	}
 
 	off := 5
 	dcidLen := int(p[off])
 	off++
 	if dcidLen > 20 || off+dcidLen > len(p) {
-		return ""
+		return nil
 	}
 	dcid := p[off : off+dcidLen]
 	off += dcidLen
 	if off >= len(p) {
-		return ""
+		return nil
 	}
 	scidLen := int(p[off])
 	off++
 	if scidLen > 20 || off+scidLen > len(p) {
-		return ""
+		return nil
 	}
 	off += scidLen
 
 	tokenLen, n := varint(p[off:])
 	if n == 0 || off+n+int(tokenLen) > len(p) {
-		return ""
+		return nil
 	}
 	off += n + int(tokenLen)
 
 	payloadLen, n := varint(p[off:])
 	if n == 0 {
-		return ""
+		return nil
 	}
 	off += n
 	pnOffset := off
 	if pnOffset+int(payloadLen) > len(p) || payloadLen < 20 {
-		return ""
+		return nil
 	}
 
 	// Initial secrets, both directions derived from the client's DCID.
@@ -115,11 +136,11 @@ func QUICSNI(p []byte) string {
 	// because the packet number length is itself protected and unknown yet.
 	sampleOff := pnOffset + 4
 	if sampleOff+16 > len(p) {
-		return ""
+		return nil
 	}
 	block, err := aes.NewCipher(hp)
 	if err != nil {
-		return ""
+		return nil
 	}
 	mask := make([]byte, 16)
 	block.Encrypt(mask, p[sampleOff:sampleOff+16])
@@ -145,22 +166,23 @@ func QUICSNI(p []byte) string {
 	ciphertext := p[pnOffset+pnLen : pnOffset+int(payloadLen)]
 	aeadBlock, err := aes.NewCipher(key)
 	if err != nil {
-		return ""
+		return nil
 	}
 	aead, err := cipher.NewGCM(aeadBlock)
 	if err != nil {
-		return ""
+		return nil
 	}
 	plain, err := aead.Open(nil, nonce, ciphertext, hdr)
 	if err != nil {
-		return "" // not an Initial we can read: retry packet, wrong version, truncated
+		return nil // not an Initial we can read: retry packet, wrong version, truncated
 	}
-	return sniFromFrames(plain)
+	return plain
 }
 
-// sniFromFrames walks QUIC frames looking for CRYPTO data at offset zero, which
-// is where the ClientHello starts.
-func sniFromFrames(b []byte) string {
+// cryptoHandshake walks QUIC frames for CRYPTO data at offset zero, which is
+// where the ClientHello starts, and returns those bytes: the bare handshake
+// message with no TLS record header.
+func cryptoHandshake(b []byte) []byte {
 	for len(b) > 0 {
 		switch b[0] {
 		case 0x00: // PADDING - the client pads Initials to 1200 bytes
@@ -171,32 +193,28 @@ func sniFromFrames(b []byte) string {
 			b = b[1:]
 			off, n := varint(b)
 			if n == 0 {
-				return ""
+				return nil
 			}
 			b = b[n:]
 			length, n := varint(b)
 			if n == 0 {
-				return ""
+				return nil
 			}
 			b = b[n:]
 			if int(length) > len(b) {
-				return ""
+				return nil
 			}
 			if off == 0 {
-				// CRYPTO data is the bare handshake message: no TLS record
-				// header, so hand it to the handshake-level parser.
-				if s := parseSNIHandshake(b[:length]); s != "" {
-					return s
-				}
+				return b[:length]
 			}
 			b = b[length:]
 		default:
 			// Any other frame type in a client Initial means we have lost the
 			// thread; walking further would be guessing.
-			return ""
+			return nil
 		}
 	}
-	return ""
+	return nil
 }
 
 // varint decodes a QUIC variable-length integer, returning the value and how

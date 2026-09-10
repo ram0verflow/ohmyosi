@@ -57,8 +57,13 @@ type Obs struct {
 
 	SYN, FIN, RST bool
 
-	SNI string      // non-empty when this packet was a ClientHello we could read
-	DNS []DNSRecord // non-empty when this packet was a DNS response we could read
+	SNI string // non-empty when this packet was a ClientHello we could read
+	// JA4 is the TLS client fingerprint from a ClientHello: it identifies the
+	// software making the call, and unlike the SNI it survives Encrypted Client
+	// Hello. Set on the same packets that carry an SNI.
+	JA4      string
+	HTTPHost string      // cleartext HTTP Host header, when present
+	DNS      []DNSRecord // non-empty when this packet was a DNS response we could read
 	// Questions are the names asked for in a DNS message. A resolver's own
 	// flows are meaningless without them - "mDNSResponder to 1.1.1.1" says
 	// nothing, while the list of names it is resolving says everything.
@@ -165,14 +170,19 @@ func (d *Decoder) Decode(p *pktap.Packet) *Obs {
 			o.SYN, o.FIN, o.RST = d.tcp.SYN, d.tcp.FIN, d.tcp.RST
 			o.PayloadLen = len(d.tcp.Payload)
 			o.SNI = parseSNI(d.tcp.Payload)
+			o.JA4 = JA4(d.tcp.Payload)
+			if o.SNI == "" {
+				o.HTTPHost = parseHTTPHost(d.tcp.Payload)
+			}
 		case layers.LayerTypeUDP:
 			o.Proto = UDP
 			o.SPort, o.DPort = uint16(d.udp.SrcPort), uint16(d.udp.DstPort)
 			o.PayloadLen = len(d.udp.Payload)
 			// QUIC Initials carry a readable ClientHello. This is where most
 			// browser traffic to Google and Cloudflare lives, and without it
-			// every one of those flows is a bare address.
-			o.SNI = QUICSNI(d.udp.Payload)
+			// every one of those flows is a bare address. The same ClientHello
+			// yields the JA4 fingerprint of whatever is speaking QUIC.
+			o.SNI, o.JA4 = QUICInfo(d.udp.Payload)
 		case layers.LayerTypeDNS:
 			o.DNS = collectDNS(&d.dns)
 			for _, q := range d.dns.Questions {
