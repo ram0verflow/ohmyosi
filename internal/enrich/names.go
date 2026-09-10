@@ -22,6 +22,7 @@ type Source string
 const (
 	SrcSNI  Source = "sni"  // read off the TLS handshake: exactly what the client asked for
 	SrcDNS  Source = "dns"  // sniffed from a DNS response: what the app looked up
+	SrcHTTP Source = "http" // cleartext HTTP Host header
 	SrcRDNS Source = "rdns" // PTR record: often a hosting provider, not the site
 )
 
@@ -29,8 +30,10 @@ const (
 func (s Source) Rank() int {
 	switch s {
 	case SrcSNI:
-		return 3
+		return 4
 	case SrcDNS:
+		return 3
+	case SrcHTTP:
 		return 2
 	case SrcRDNS:
 		return 1

@@ -25,6 +25,19 @@ type Proc struct {
 	Path     string `json:"path"` // full executable path
 	BundleID string `json:"bundle_id,omitempty"`
 	IconID   string `json:"icon_id,omitempty"` // served at /icons/<id>.png
+
+	// PPID is the parent process. Lineage is half the story: a binary in /tmp is
+	// one thing, the same binary launched by a shell launched by a browser is
+	// another, and the parent is where that thread starts.
+	PPID int32 `json:"ppid,omitempty"`
+
+	// Signing is the code-signature verdict on the binary: "apple",
+	// "developer-id", "signed", "adhoc", "unsigned" or "unknown". It speaks to
+	// the software's provenance rather than the connection - the one property
+	// here about what the process *is*, not who it is talking to. Ad-hoc and
+	// unsigned are the interesting ones: anyone can produce them.
+	Signing  string `json:"signing,omitempty"`
+	SignedBy string `json:"signed_by,omitempty"` // leaf signing authority, when signed
 }
 
 // Procs resolves and caches process metadata.
@@ -134,6 +147,8 @@ func (p *Procs) resolve(ctx context.Context, pid int32) *Proc {
 	if info.Name == "" {
 		info.Name = filepath.Base(path)
 	}
+	info.PPID = parentPID(ctx, pid)
+	info.Signing, info.SignedBy = codeSignature(ctx, path)
 
 	bundles := appBundles(path)
 	if len(bundles) == 0 {
@@ -277,6 +292,59 @@ func execPath(ctx context.Context, pid int32) string {
 		}
 	}
 	return ""
+}
+
+// parentPID reads a process's parent from ps. Zero on any failure - lineage is
+// useful, not load-bearing.
+func parentPID(ctx context.Context, pid int32) int32 {
+	out, err := run(ctx, "/bin/ps", "-p", strconv.Itoa(int(pid)), "-o", "ppid=")
+	if err != nil {
+		return 0
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(out)); err == nil {
+		return int32(n)
+	}
+	return 0
+}
+
+// codeSignature asks codesign what signed a binary, and maps its answer to a
+// small vocabulary the scorer and the UI can both use.
+//
+// codesign writes its detail to stderr, so combined output is read. The verdict
+// is deliberately coarse: the distinction that matters is between code whose
+// origin is attestable (Apple, a Developer ID certificate) and code where it is
+// not (ad-hoc, unsigned). The latter proves nothing about where it came from,
+// which is exactly what makes an unnamed connection from it worth a look.
+func codeSignature(ctx context.Context, path string) (status, authority string) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(cctx, "/usr/bin/codesign", "-dv", "--verbose=2", path).CombinedOutput()
+	s := string(out)
+	switch {
+	case strings.Contains(s, "code object is not signed at all"):
+		return "unsigned", ""
+	case strings.Contains(s, "Signature=adhoc"):
+		return "adhoc", ""
+	}
+	// Authority lines run most-specific first; the leaf certificate is the one
+	// that names who signed it.
+	var auth string
+	for _, line := range strings.Split(s, "\n") {
+		if a, ok := strings.CutPrefix(line, "Authority="); ok {
+			auth = strings.TrimSpace(a)
+			break
+		}
+	}
+	switch {
+	case auth == "":
+		return "unknown", ""
+	case strings.HasPrefix(auth, "Software Signing"), strings.Contains(auth, "Apple"):
+		return "apple", auth
+	case strings.HasPrefix(auth, "Developer ID"):
+		return "developer-id", auth
+	default:
+		return "signed", auth
+	}
 }
 
 func fileExists(p string) bool {

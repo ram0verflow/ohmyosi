@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -40,6 +41,9 @@ import (
 func Registrable(host string) string {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "" || strings.ContainsAny(host, ":/") {
+		return ""
+	}
+	if net.ParseIP(host) != nil {
 		return ""
 	}
 	d, err := publicsuffix.EffectiveTLDPlusOne(host)
