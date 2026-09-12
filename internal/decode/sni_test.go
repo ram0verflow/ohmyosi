@@ -16,7 +16,7 @@ func clientHello(sni string, pad int) []byte {
 	if sni != "" {
 		name := []byte(sni)
 		var sn []byte
-		sn = append(sn, 0x00)                                  // name_type host_name
+		sn = append(sn, 0x00) // name_type host_name
 		sn = binary.BigEndian.AppendUint16(sn, uint16(len(name)))
 		sn = append(sn, name...)
 		var list []byte

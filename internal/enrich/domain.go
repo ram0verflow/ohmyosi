@@ -241,10 +241,10 @@ type rdapDomain struct {
 }
 
 type rdapEntity struct {
-	Roles       []string        `json:"roles"`
-	VCardArray  json.RawMessage `json:"vcardArray"`
-	Entities   []rdapEntity `json:"entities"`
-	Handle     string       `json:"handle"`
+	Roles      []string        `json:"roles"`
+	VCardArray json.RawMessage `json:"vcardArray"`
+	Entities   []rdapEntity    `json:"entities"`
+	Handle     string          `json:"handle"`
 }
 
 func parseRDAP(body []byte, out *Owner) {

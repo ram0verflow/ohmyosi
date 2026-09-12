@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -191,6 +192,45 @@ func TestMutationsRequireTokenAndLocalOrigin(t *testing.T) {
 	h.ServeHTTP(w, authorized("POST", "/api/enforce", `{"on":true}`))
 	if w.Code != http.StatusForbidden || called != 0 {
 		t.Fatalf("empty token must disable controls: status=%d calls=%d", w.Code, called)
+	}
+}
+
+func TestControlAuthorizationOverLoopbackHTTP(t *testing.T) {
+	s := testServer(t)
+	called := 0
+	s.Enforce = func(bool) error { called++; return nil }
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	request := func(token, origin string) int {
+		t.Helper()
+		r, err := http.NewRequest(http.MethodPost, ts.URL+"/api/enforce", strings.NewReader(`{"on":true}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		resp, err := ts.Client().Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	if got := request("", ""); got != http.StatusForbidden || called != 0 {
+		t.Fatalf("missing token over HTTP: status=%d calls=%d", got, called)
+	}
+	if got := request("test-control-secret", "http://attacker.example"); got != http.StatusForbidden || called != 0 {
+		t.Fatalf("hostile origin over HTTP: status=%d calls=%d", got, called)
+	}
+	if got := request("test-control-secret", ts.URL); got != http.StatusOK || called != 1 {
+		t.Fatalf("authorized loopback request: status=%d calls=%d", got, called)
 	}
 }
 

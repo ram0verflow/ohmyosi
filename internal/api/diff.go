@@ -50,21 +50,21 @@ const (
 type Pair struct {
 	Key string `json:"key"`
 
-	App   string `json:"app"`             // the outermost bundle, what a person recognises
-	Comm  string `json:"comm"`            // the specific process
-	PIDs  []int32 `json:"pids,omitempty"` // every pid seen under this name
-	Sign  string `json:"signing,omitempty"`
+	App  string  `json:"app"`            // the outermost bundle, what a person recognises
+	Comm string  `json:"comm"`           // the specific process
+	PIDs []int32 `json:"pids,omitempty"` // every pid seen under this name
+	Sign string  `json:"signing,omitempty"`
 
-	Dest   string `json:"dest"` // the destination as named at Level
-	Level  Level  `json:"level"`
-	Org    string `json:"org,omitempty"`
-	ASN    uint32 `json:"asn,omitempty"`
-	ASNOrg string `json:"asn_org,omitempty"`
-	Country string `json:"country,omitempty"`
-	Owner  string `json:"owner,omitempty"`   // domain registrant
-	AgeDays int   `json:"age_days,omitempty"`
-	Addrs  []string `json:"addrs,omitempty"` // every address seen behind this key
-	Ports  []uint16 `json:"ports,omitempty"`
+	Dest    string   `json:"dest"` // the destination as named at Level
+	Level   Level    `json:"level"`
+	Org     string   `json:"org,omitempty"`
+	ASN     uint32   `json:"asn,omitempty"`
+	ASNOrg  string   `json:"asn_org,omitempty"`
+	Country string   `json:"country,omitempty"`
+	Owner   string   `json:"owner,omitempty"` // domain registrant
+	AgeDays int      `json:"age_days,omitempty"`
+	Addrs   []string `json:"addrs,omitempty"` // every address seen behind this key
+	Ports   []uint16 `json:"ports,omitempty"`
 
 	DirectIP bool `json:"direct_ip,omitempty"` // at least one flow never announced a name
 
@@ -89,13 +89,13 @@ type Pair struct {
 
 // Session is one recording reduced to the set of relationships it contains.
 type Session struct {
-	Path     string  `json:"path"`
-	Hostname string  `json:"hostname,omitempty"`
-	Iface    string  `json:"iface,omitempty"`
-	Version  string  `json:"version,omitempty"`
-	Start    float64 `json:"start"`
-	End      float64 `json:"end"`
-	Ticks    int     `json:"ticks"`
+	Path     string           `json:"path"`
+	Hostname string           `json:"hostname,omitempty"`
+	Iface    string           `json:"iface,omitempty"`
+	Version  string           `json:"version,omitempty"`
+	Start    float64          `json:"start"`
+	End      float64          `json:"end"`
+	Ticks    int              `json:"ticks"`
 	Pairs    map[string]*Pair `json:"pairs"`
 }
 
@@ -246,7 +246,7 @@ func (s *Session) fold(f FlowView, procs map[int32]enrich.Proc) {
 			Key: key, App: app, Comm: comm, Sign: signing,
 			Dest: dest, Level: level, AgeDays: -1,
 			FirstSeen: f.FirstSeen, LastSeen: f.LastSeen,
-			perFlow: map[string][2]uint64{},
+			perFlow:   map[string][2]uint64{},
 			seenAddrs: map[string]bool{}, seenPorts: map[uint16]bool{},
 			seenPIDs: map[int32]bool{}, seenFlows: map[string]bool{},
 		}

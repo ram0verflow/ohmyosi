@@ -1,4 +1,4 @@
-name: Go
+name: CI
 
 on:
   pull_request:
@@ -14,16 +14,32 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Test
-        run: go test ./...
       - name: Check formatting
         run: |
-          unformatted=$(gofmt -l cmd/ohmyosi/control.go cmd/ohmyosi/control_test.go cmd/ohmyosi/main.go internal/api/server.go internal/api/server_test.go)
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
           if [ -n "$unformatted" ]; then
             echo "Unformatted Go files:"
             echo "$unformatted"
             exit 1
           fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test with race detector
+        run: go test -race ./...
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci --prefix web
+      - name: Build viewer
+        run: npm run build --prefix web
   mac-app:
     runs-on: macos-latest
     steps:

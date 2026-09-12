@@ -188,7 +188,7 @@ func TestLocalIsNotABlanketPardon(t *testing.T) {
 	in := Input{
 		DirectIP: true, RemoteIsLocal: true, RemotePort: 4444,
 		ExecPath: "/tmp/.hidden/agent", Signing: "unsigned",
-		DomainAgeDays: -1,
+		DomainAgeDays:    -1,
 		BeaconRegularity: 0.95, BeaconSamples: 12,
 	}
 	got := Evaluate(in)

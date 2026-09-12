@@ -149,8 +149,8 @@ func TestNgReaderDuplicatePIBsKeepIndices(t *testing.T) {
 func TestNgReaderPerInterfaceLinkType(t *testing.T) {
 	var f []byte
 	f = append(f, shb()...)
-	f = append(f, idb(1)...)   // 0: Ethernet
-	f = append(f, idb(0)...)   // 1: null/loopback
+	f = append(f, idb(1)...) // 0: Ethernet
+	f = append(f, idb(0)...) // 1: null/loopback
 	f = append(f, epb(0, []byte{1})...)
 	f = append(f, epb(1, []byte{2})...)
 

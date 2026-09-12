@@ -46,3 +46,18 @@ func TestControlTokenRejectsPublicDirectory(t *testing.T) {
 		t.Fatal("control token written into a publicly accessible directory")
 	}
 }
+
+func TestControlTokenRejectsSymlinkDirectory(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "private")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "control")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := newControlToken(link); err == nil {
+		t.Fatal("control token written through a symlink directory")
+	}
+}
