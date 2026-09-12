@@ -388,10 +388,13 @@ func main() {
 			if e.Org != "" {
 				st.WithOrg++
 			}
-			if e.Host == "" && e.Org == "" {
+			if e.Host == "" && e.Org == "" && e.NameGap != "dns_ambiguous" {
 				st.Unidentified++
 			}
-			if e.HostSrc != "sni" && e.HostSrc != "dns" && e.HostSrc != "http" {
+			if e.NameGap == "dns_ambiguous" {
+				st.AmbiguousNames++
+			}
+			if api.IsDirectIP(e) {
 				st.DirectIP++
 			}
 		}
@@ -464,7 +467,7 @@ func main() {
 				continue
 			}
 			for _, r := range o.DNS {
-				names.LearnDNS(r.IP, r.Name)
+				names.LearnDNS(r.IP, r.Name, time.Duration(r.TTL)*time.Second)
 			}
 			table.Observe(o)
 			decoded.Add(1)
@@ -658,7 +661,7 @@ func rate(f flow.Flow, e api.Endpoint, procs *enrich.Procs, beacons *score.Track
 		age = e.AgeDays
 	}
 	return score.Evaluate(score.Input{
-		DirectIP:         e.HostSrc != "sni" && e.HostSrc != "dns",
+		DirectIP:         api.IsDirectIP(e),
 		HasName:          e.Host != "",
 		HasOrg:           e.Org != "",
 		RemotePort:       f.Remote.Port(),

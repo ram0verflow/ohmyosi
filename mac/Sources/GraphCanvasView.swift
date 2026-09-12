@@ -381,7 +381,7 @@ struct GraphCanvasView: View {
                 statPill("\(stats.destinations)", "destinations")
                 statPill("\(stats.links)", "paths")
                 if let names = stats.nameEvidence {
-                    statPill(names, "names flow/address/unknown")
+                    statPill(names, "names flow/address/ambiguous/unknown")
                 }
                 if let capture = stats.captureHealth {
                     statPill(capture, "capture")

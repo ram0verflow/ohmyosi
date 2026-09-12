@@ -38,7 +38,8 @@ Controls panel accepts it for the current session.
              "os_drops": 0, "os_drops_known": false,
              "flows": 37, "procs_known": 22,
              "live_flows": 31, "flow_names": 18,
-             "address_names": 7, "without_name": 6 }
+             "address_names": 7, "without_name": 6,
+             "ambiguous_names": 2 }
 }
 ```
 
@@ -81,8 +82,9 @@ re-serializing several hundred flows every time.
 | `pid` | `0` means the kernel gave us no attribution for this flow. |
 | `comm` | Kernel's name, **truncated to 16 characters**. Prefer the matching `proc.name`. |
 | `host_src` | `sni` \| `http` \| `dns` \| `rdns` — see below. |
-| `name_scope` | `flow` \| `address` \| `none` — how narrowly the name evidence applies. |
-| `name_gap` | Present when `name_scope` is `none`; explains why no name is available. |
+| `name_scope` | `flow` \| `address` \| `none` — how narrowly the name evidence applies. An ambiguous DNS candidate set is `address` even though `host` is empty. |
+| `name_gap` | Present when no single name can be emitted; explains whether evidence is absent or ambiguous. |
+| `name_candidates` | Sorted, unexpired DNS candidates when `name_gap` is `dns_ambiguous`. No candidate is silently promoted to `host`. |
 | `state` | `new` on first sight, `active` after, `closed` once a FIN or RST is seen. |
 | `self` | ohmyosi's own reverse-DNS traffic. Hide by default. |
 
@@ -117,6 +119,9 @@ better than a blank node.
 `name_gap` avoids collapsing all of those cases into a blank while also
 avoiding claims the capture cannot support:
 
+- **`dns_ambiguous`** — multiple unexpired DNS names point at this address.
+  `name_scope` is `address`, the candidates are retained, and `host` is empty
+  because the flow did not identify which shared-address tenant it wanted.
 - **`pre_existing`** — the connection predates observation, so its handshake
   cannot be recovered.
 - **`handshake_name_unavailable`** — a port-443 flow had no readable name. This
@@ -143,7 +148,9 @@ in that tick:
   is evidence of no reported loss, while `false` means the stream did not
   publish that counter. Classic pcap has no in-band drop telemetry.
 - `flow_names`, `address_names`, and `without_name` split hostname coverage by
-  evidentiary strength. `with_name` remains their total for older clients.
+  evidentiary strength. `ambiguous_names` is the subset of `without_name` where
+  DNS evidence exists but cannot safely select one tenant. `with_name` remains
+  the selected-name total for older clients.
 
 Drop counters are optional and are often written only when a pcapng stream
 ends. A live `false` is therefore “not available yet,” never “zero drops.”

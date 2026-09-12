@@ -4,7 +4,8 @@ export type Endpoint = {
   host?: string;
   host_src?: string;
   name_scope?: "flow" | "address" | "none";
-  name_gap?: "pre_existing" | "handshake_name_unavailable" | "no_name_observed";
+  name_gap?: "dns_ambiguous" | "pre_existing" | "handshake_name_unavailable" | "no_name_observed";
+  name_candidates?: string[];
   org?: string;
   org_detail?: string;
   org_src?: string;
@@ -60,6 +61,7 @@ export type Envelope = {
     flow_names: number;
     address_names: number;
     without_name: number;
+    ambiguous_names: number;
     packets: number;
     decoded: number;
     undecoded: number;

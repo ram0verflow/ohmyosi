@@ -217,7 +217,9 @@ struct MainView: View {
 
     private func nameEvidenceSummary(_ stats: Stats?) -> String? {
         guard let stats else { return nil }
-        return "\(stats.flow_names ?? 0)/\(stats.address_names ?? 0)/\(stats.without_name ?? 0)"
+        let ambiguous = stats.ambiguous_names ?? 0
+        let unknown = max(0, (stats.without_name ?? 0) - ambiguous)
+        return "\(stats.flow_names ?? 0)/\(stats.address_names ?? 0)/\(ambiguous)/\(unknown)"
     }
 
     private func captureHealthSummary(_ stats: Stats?) -> String? {

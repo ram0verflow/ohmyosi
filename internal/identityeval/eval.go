@@ -194,15 +194,15 @@ var methods = []struct {
 }{
 	{"dns-latest", func(_ Event, dns dnsView) (string, string) { return dnsLatest(dns.active) }},
 	{"dns-unique", func(_ Event, dns dnsView) (string, string) { return dnsUnique(dns.active) }},
-	{"product-current", func(e Event, dns dnsView) (string, string) {
+	{"flow-first-no-ttl", func(e Event, dns dnsView) (string, string) {
 		if e.SNI != "" {
 			return e.SNI, "sni"
 		}
 		if e.HTTPHost != "" {
 			return e.HTTPHost, "http"
 		}
-		// The live product currently keeps one DNS name per address without
-		// retaining TTL, so model that implementation exactly.
+		// Frozen model of the original single-value product cache. Keep it as a
+		// regression baseline after the product itself improves.
 		if label := latest(dns.observed); label != "" {
 			return label, "dns-latest-no-ttl"
 		}

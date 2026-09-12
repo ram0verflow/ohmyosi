@@ -39,7 +39,10 @@ SNI and HTTP Host are scoped to the connection that carried them. They are
 never copied into the address cache: a CDN address can serve unrelated tenants,
 so lending one flow's handshake name to another would turn strong evidence into
 a confident false label. DNS and PTR remain explicitly lower-confidence,
-address-level fallbacks.
+address-level fallbacks. DNS entries retain their TTL and the cache preserves
+all unexpired candidates. If more than one name is plausible for an address,
+the product exposes the candidate set and abstains instead of letting the last
+answer overwrite the others.
 
 ## Offline first
 

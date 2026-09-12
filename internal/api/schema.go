@@ -84,6 +84,9 @@ type Endpoint struct {
 	// a missed or truncated handshake.
 	NameScope string `json:"name_scope,omitempty"`
 	NameGap   string `json:"name_gap,omitempty"`
+	// NameCandidates are the unexpired address-level DNS names when more than
+	// one is plausible. Host stays empty because choosing one would be a guess.
+	NameCandidates []string `json:"name_candidates,omitempty"`
 
 	// Org is who owns the address space - Cloudflare, Amazon, Google - from
 	// published allocation lists. It answers a DIFFERENT question from Host:
@@ -192,13 +195,15 @@ type Stats struct {
 	LiveFlows   int `json:"live_flows"`
 	WithProcess int `json:"with_process"`
 	WithName    int `json:"with_name"` // any hostname, regardless of evidence scope
-	// FlowNames came from this flow's SNI/HTTP handshake. AddressNames came
-	// from DNS/PTR and may be ambiguous on a shared address. WithoutName is
-	// explicit rather than forcing clients to infer it from subtraction.
-	FlowNames    int `json:"flow_names"`
-	AddressNames int `json:"address_names"`
-	WithoutName  int `json:"without_name"`
-	WithOrg      int `json:"with_org"` // an organisation: where it is hosted
+	// FlowNames came from this flow's SNI/HTTP handshake. AddressNames are
+	// unambiguous DNS/PTR selections. WithoutName is explicit rather than
+	// forcing clients to infer it from subtraction; AmbiguousNames is its subset
+	// where DNS candidates existed but selecting one would have been a guess.
+	FlowNames      int `json:"flow_names"`
+	AddressNames   int `json:"address_names"`
+	WithoutName    int `json:"without_name"`
+	AmbiguousNames int `json:"ambiguous_names"`
+	WithOrg        int `json:"with_org"` // an organisation: where it is hosted
 	// Unidentified is the number that matters: flows we can say nothing about
 	// beyond an address. Reported rather than hidden.
 	Unidentified int `json:"unidentified"`
@@ -219,13 +224,12 @@ type Stats struct {
 // verdict and enforced whether a block was actually applied.
 func View(f flow.Flow, remote Endpoint, verdict score.Result, firstContact bool, dec rules.Decision, enforced bool) FlowView {
 	classifyNameEvidence(f, &remote)
-	hostSrc := remote.HostSrc
 	v := FlowView{
 		ID: f.ID, Proto: string(f.Proto), PID: f.DisplayPID(), Comm: f.DisplayComm(), Iface: f.Iface,
 		Local:       Endpoint{IP: f.Local.Addr().String(), Port: f.Local.Port()},
 		Remote:      remote,
 		PreExisting: f.PreExisting,
-		DirectIP:    hostSrc != "sni" && hostSrc != "dns" && hostSrc != "http",
+		DirectIP:    IsDirectIP(remote),
 		BytesUp:     f.BytesUp, BytesDown: f.BytesDown,
 		PktsUp: f.PktsUp, PktsDown: f.PktsDown,
 		FirstSeen: float64(f.FirstSeen.UnixNano()) / 1e9,
@@ -245,7 +249,18 @@ func View(f flow.Flow, remote Endpoint, verdict score.Result, firstContact bool,
 	return v
 }
 
+// IsDirectIP means the application supplied no flow name and no DNS evidence
+// was observed. Ambiguous DNS is deliberately not direct-IP: the machine did
+// announce names, but the address-level evidence could not select one safely.
+func IsDirectIP(remote Endpoint) bool {
+	return remote.HostSrc != "sni" && remote.HostSrc != "dns" && remote.HostSrc != "http" && remote.NameGap != "dns_ambiguous"
+}
+
 func classifyNameEvidence(f flow.Flow, remote *Endpoint) {
+	if remote.NameGap == "dns_ambiguous" {
+		remote.NameScope = "address"
+		return
+	}
 	switch remote.HostSrc {
 	case "sni", "http":
 		remote.NameScope = "flow"

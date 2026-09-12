@@ -174,6 +174,7 @@ struct NodePopupView: View {
                 }
                 if let src = flow.remote.host_src { tag(src.uppercased(), tone: .normal) }
                 if flow.remote.name_scope == "address" { tag("ADDRESS-LEVEL", tone: .muted) }
+                if flow.remote.name_gap == "dns_ambiguous" { tag("DNS AMBIGUOUS", tone: .warn) }
                 if flow.remote.name_scope == "none" { tag(nameGapLabel(flow.remote.name_gap), tone: .warn) }
                 // The honest flags. These are the ones worth seeing without
                 // opening anything: nobody announced a name for this, or the

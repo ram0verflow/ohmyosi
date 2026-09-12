@@ -38,13 +38,18 @@ func Investigate(ip netip.Addr, port uint16, sni, httpHost string, c Investigate
 		trail = append(trail, fmt.Sprintf("resolved to %s (http host)", httpHost))
 	default:
 		if c.Names != nil {
-			if h, src := c.Names.Lookup(ip); h != "" {
-				e.Host, e.HostSrc = h, string(src)
-				trail = append(trail, fmt.Sprintf("resolved to %s (%s)", h, src))
+			result := c.Names.LookupResult(ip)
+			if result.Name != "" {
+				e.Host, e.HostSrc = result.Name, string(result.Source)
+				trail = append(trail, fmt.Sprintf("resolved to %s (%s)", result.Name, result.Source))
+			} else if result.Ambiguous {
+				e.NameGap = "dns_ambiguous"
+				e.NameCandidates = result.Candidates
+				trail = append(trail, fmt.Sprintf("DNS observed %d names for this shared address; no tenant selected", len(result.Candidates)))
 			}
 		}
 	}
-	if e.Host == "" {
+	if e.Host == "" && e.NameGap == "" {
 		trail = append(trail, "no name observed on the wire - address only")
 	}
 

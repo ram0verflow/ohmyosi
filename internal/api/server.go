@@ -404,8 +404,8 @@ function render(){
     const org=f.remote.org?' <span class=org>'+f.remote.org+(f.remote.org_detail?' '+f.remote.org_detail:'')+'</span>':'';
     const direct=f.direct_ip?' <span class=warn>direct-ip</span>':'';
     const scope=f.remote.name_scope==='address'?' <span class=src>address-level</span>':'';
-    const gaps={pre_existing:'name unknown: pre-existing',handshake_name_unavailable:'name unknown: handshake unavailable',no_name_observed:'name unknown: not observed'};
-    const gap=f.remote.name_gap?' <span class=warn>'+gaps[f.remote.name_gap]+'</span>':'';
+    const gaps={dns_ambiguous:'DNS ambiguous: '+(f.remote.name_candidates||[]).join(', '),pre_existing:'name unknown: pre-existing',handshake_name_unavailable:'name unknown: handshake unavailable',no_name_observed:'name unknown: not observed'};
+    const gap=f.remote.name_gap?' <span class=warn>'+(gaps[f.remote.name_gap]||f.remote.name_gap)+'</span>':'';
     const h=fav+(f.remote.host?'<span class=host>'+f.remote.host+'</span> <span class=src>'+(f.remote.host_src||'')+'</span>'
               :'<span class=ip>'+f.remote.ip+'</span>')+scope+gap+own+org+direct;
     const qs=(f.queries&&f.queries.length)?'<div class=q>resolving '+f.queries.slice(-6).join(', ')+(f.queries.length>6?' …':'')+'</div>':'';
@@ -413,6 +413,8 @@ function render(){
       '<td class=n>'+fmt(f.bytes_up)+'<td class=n>'+fmt(f.bytes_down)+'<td>'+f.state+'</tr>';
   }).join('');
   const pct=(a,b)=>b?Math.round(100*a/b)+'%':'—';
+  const ambiguous=stats?(stats.ambiguous_names||0):0;
+  const withoutName=stats?(stats.without_name||0):0;
   const drops=stats&&(stats.interface_drops_known||stats.os_drops_known)
     ?[stats.interface_drops_known?stats.interface_drops+' interface':'',stats.os_drops_known?stats.os_drops+' OS':''].filter(Boolean).join(' / ')
     :'n/a';
@@ -420,7 +422,7 @@ function render(){
     (host?host.hostname+' · '+host.iface+' · ':'')+
     (stats?stats.live_flows+' flows · process '+pct(stats.with_process,stats.live_flows)+
       ' · named '+pct(stats.with_name,stats.live_flows)+
-      ' ('+stats.flow_names+' flow / '+stats.address_names+' address / '+stats.without_name+' unknown)'+
+      ' ('+(stats.flow_names||0)+' flow / '+(stats.address_names||0)+' address / '+ambiguous+' ambiguous / '+Math.max(0,withoutName-ambiguous)+' unknown)'+
       ' · org '+pct(stats.with_org,stats.live_flows)+
       ' · UNIDENTIFIED '+stats.unidentified+
       ' · direct-ip '+stats.direct_ip+

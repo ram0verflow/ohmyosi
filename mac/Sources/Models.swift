@@ -41,6 +41,7 @@ struct Endpoint: Codable, Sendable, Hashable {
     var host_src: String?
     var name_scope: String?
     var name_gap: String?
+    var name_candidates: [String]?
     var org: String?
     var org_detail: String?
     var org_src: String?
@@ -220,6 +221,7 @@ struct Stats: Codable, Sendable {
     var flow_names: Int?
     var address_names: Int?
     var without_name: Int?
+    var ambiguous_names: Int?
     var with_org: Int?
     var unidentified: Int?
     var direct_ip: Int?

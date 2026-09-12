@@ -18,12 +18,12 @@ func TestSharedIPFixture(t *testing.T) {
 	}
 	report := Evaluate(events)
 	want := map[string][3]int{
-		"dns-latest":      {2, 2, 2},
-		"dns-unique":      {1, 0, 5},
-		"product-current": {4, 1, 1},
-		"flow-first":      {4, 1, 1},
-		"flow-first-safe": {4, 0, 2},
-		"flow-only":       {3, 0, 3},
+		"dns-latest":        {2, 2, 2},
+		"dns-unique":        {1, 0, 5},
+		"flow-first-no-ttl": {4, 1, 1},
+		"flow-first":        {4, 1, 1},
+		"flow-first-safe":   {4, 0, 2},
+		"flow-only":         {3, 0, 3},
 	}
 	for _, got := range report.Methods {
 		w, ok := want[got.Method]
@@ -44,6 +44,13 @@ func TestRejectsTruthDerivedFromSignalUnderTest(t *testing.T) {
 	}
 }
 
+func TestRejectsUnknownFixtureField(t *testing.T) {
+	input := `{"type":"dns","at":1,"ip":"203.0.113.1","name":"x.test","ttl":60,"tll":60}`
+	if _, err := Load(strings.NewReader(input)); err == nil {
+		t.Fatal("expected misspelled fixture field to be rejected")
+	}
+}
+
 func TestDNSExpiry(t *testing.T) {
 	input := strings.Join([]string{
 		`{"type":"dns","at":1,"ip":"203.0.113.1","name":"old.test","ttl":2}`,
@@ -59,7 +66,7 @@ func TestDNSExpiry(t *testing.T) {
 			if report.Abstained != 1 {
 				t.Fatalf("%s used an expired DNS answer: %+v", report.Method, report)
 			}
-		case "product-current":
+		case "flow-first-no-ttl":
 			if report.Wrong != 1 {
 				t.Fatalf("current product model did not expose stale-cache error: %+v", report)
 			}

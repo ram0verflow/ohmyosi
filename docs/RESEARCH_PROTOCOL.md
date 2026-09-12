@@ -33,9 +33,9 @@ guessing. Report both, plus correct flows divided by all flows.
   This models a single-value IP-to-name cache.
 - `dns-unique`: DNS-only, but abstains unless exactly one unexpired name is
   known for the address. This is the non-straw-man ambiguity-aware baseline.
-- `product-current`: flow SNI, then cleartext HTTP Host, then the last DNS name
-  stored for the address without TTL expiry. This models the shipped cache,
-  including its current limitation.
+- `flow-first-no-ttl`: flow SNI, then cleartext HTTP Host, then the last DNS
+  name stored for the address without TTL expiry. This freezes the original
+  single-value product cache as a regression baseline.
 - `flow-first`: flow SNI, then HTTP Host, then TTL-respecting `dns-latest`.
 - `flow-first-safe`: flow SNI, then HTTP Host, then `dns-unique`. This is the
   candidate policy suggested by the shared-IP failure mode.
@@ -63,9 +63,9 @@ go run ./cmd/identity-eval -input research/fixtures/shared-ip.ndjson -json
 
 The synthetic fixture is a test of the evaluator and a reproduction of the
 known contamination mechanism. It is not evidence for a paper headline. Its
-expected result is deliberately uncomfortable: current `flow-first` still
-emits one wrong DNS fallback, while `flow-first-safe` trades that wrong answer
-for an abstention.
+expected result is deliberately uncomfortable: TTL-respecting `flow-first`
+still emits one wrong DNS fallback, while `flow-first-safe` trades that wrong
+answer for an abstention.
 
 ## Controlled study
 
@@ -93,8 +93,8 @@ Keep exploratory runs separate from the frozen evaluation set.
 ## Release gate back into the product
 
 A naming-policy change needs a fixture that fails under the old policy, passes
-under the candidate policy, and states its coverage cost. The next candidate is
-to preserve concurrent DNS candidates per address and abstain from DNS fallback
-when more than one unexpired name is plausible. Live results may reject that
-change if its coverage loss is disproportionate; the evaluator exists so that
-decision is measured rather than assumed.
+under the candidate policy, and states its coverage cost. The first product
+response preserves concurrent DNS candidates per address, respects TTL, and
+abstains from DNS fallback when more than one unexpired name is plausible. The
+checked-in synthetic fixture gates the mechanism; live results must still
+measure whether its coverage loss is disproportionate.

@@ -34,7 +34,8 @@ export default function App() {
         <div className="meta">
           {host?.hostname ?? "—"} · {stats?.live_flows ?? 0} flows · named{" "}
           {pct(stats?.with_name, stats?.live_flows)} ({stats?.flow_names ?? 0} flow / {stats?.address_names ?? 0}{" "}
-          address / {stats?.without_name ?? 0} unknown) · capture {pct(stats?.decoded, stats?.packets)} decoded · pid{" "}
+          address / {stats?.ambiguous_names ?? 0} ambiguous / {unknownNames(stats)} unknown) · capture{" "}
+          {pct(stats?.decoded, stats?.packets)} decoded · pid{" "}
           {pct(stats?.packets_with_process, stats?.packets)} · trunc {stats?.truncated_packets ?? 0} · drops{" "}
           {dropSummary(stats)}
         </div>
@@ -80,6 +81,9 @@ export default function App() {
 }
 
 function nameEvidence(flow: Flow) {
+  if (flow.remote.name_gap === "dns_ambiguous") {
+    return `address-level DNS is ambiguous: ${(flow.remote.name_candidates ?? []).join(", ")}`;
+  }
   if (flow.remote.name_scope === "flow") return "flow-specific";
   if (flow.remote.name_scope === "address") return "address-level; shared IPs may be ambiguous";
   switch (flow.remote.name_gap) {
@@ -90,6 +94,10 @@ function nameEvidence(flow: Flow) {
     default:
       return "unknown; no name observed";
   }
+}
+
+function unknownNames(stats?: Envelope["stats"]) {
+  return Math.max(0, (stats?.without_name ?? 0) - (stats?.ambiguous_names ?? 0));
 }
 
 function dropSummary(stats?: Envelope["stats"]) {

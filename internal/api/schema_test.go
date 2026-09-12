@@ -53,3 +53,12 @@ func TestViewExplainsMissingNameWithoutGuessing(t *testing.T) {
 		})
 	}
 }
+
+func TestViewDoesNotCallAmbiguousDNSDirectIP(t *testing.T) {
+	f := flow.Flow{Key: flow.Key{Remote: netip.AddrPortFrom(netip.MustParseAddr("203.0.113.9"), 443)}}
+	remote := Endpoint{IP: "203.0.113.9", Port: 443, NameGap: "dns_ambiguous", NameCandidates: []string{"a.example", "b.example"}}
+	got := View(f, remote, score.Result{}, false, rules.Decision{}, false)
+	if got.Remote.NameScope != "address" || got.DirectIP {
+		t.Fatalf("scope=%q direct_ip=%v, ambiguous DNS is address evidence, not direct IP", got.Remote.NameScope, got.DirectIP)
+	}
+}

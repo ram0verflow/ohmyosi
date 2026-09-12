@@ -3,6 +3,7 @@ package api
 import (
 	"net/netip"
 	"testing"
+	"time"
 
 	"ohmyosi/internal/enrich"
 )
@@ -10,7 +11,7 @@ import (
 func TestInvestigateKeepsFlowEvidenceAheadOfAddressFallback(t *testing.T) {
 	ip := netip.MustParseAddr("104.18.32.7")
 	names := enrich.NewNames(false)
-	names.LearnDNS(ip, "dns-fallback.example")
+	names.LearnDNS(ip, "dns-fallback.example", time.Minute)
 	ctx := InvestigateCtx{Names: names}
 
 	tests := []struct {
@@ -27,6 +28,21 @@ func TestInvestigateKeepsFlowEvidenceAheadOfAddressFallback(t *testing.T) {
 				t.Fatalf("host=%q source=%q, want %q/%q", got.Host, got.HostSrc, tt.wantHost, tt.wantSource)
 			}
 		})
+	}
+}
+
+func TestInvestigateAbstainsOnAmbiguousDNS(t *testing.T) {
+	ip := netip.MustParseAddr("104.18.32.7")
+	names := enrich.NewNames(false)
+	names.LearnDNS(ip, "alpha.example", time.Minute)
+	names.LearnDNS(ip, "beta.example", time.Minute)
+
+	got := Investigate(ip, 443, "", "", InvestigateCtx{Names: names})
+	if got.Host != "" || got.NameGap != "dns_ambiguous" {
+		t.Fatalf("host=%q gap=%q, want abstention for ambiguous DNS", got.Host, got.NameGap)
+	}
+	if len(got.NameCandidates) != 2 {
+		t.Fatalf("candidates=%v, want both DNS names", got.NameCandidates)
 	}
 }
 

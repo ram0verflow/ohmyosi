@@ -144,11 +144,14 @@ blank.
 
 The API and both UIs report uncertainty instead of turning it into a confident
 label. Every remote endpoint has a `name_scope`: `flow` means the name came
-from that connection's SNI or HTTP Host, `address` means DNS/PTR evidence that
-may be ambiguous on a shared IP, and `none` means no name was observed. When it
-is `none`, `name_gap` says whether the flow predates capture, a TLS/QUIC name was
-unavailable, or no naming evidence was seen at all. `handshake_name_unavailable`
-deliberately does not guess between ECH, truncation, and a missed handshake.
+from that connection's SNI or HTTP Host, `address` means DNS/PTR evidence, and
+`none` means no name was observed. DNS candidates retain their TTL. If several
+unexpired names share one address, ohmyosi leaves `host` empty, reports
+`name_gap: dns_ambiguous`, and preserves the candidates instead of choosing a
+tenant by recency. Other `name_gap` values say whether the flow predates capture,
+a TLS/QUIC name was unavailable, or no naming evidence was seen at all.
+`handshake_name_unavailable` deliberately does not guess between ECH,
+truncation, and a missed handshake.
 
 Capture health is reported beside naming coverage: decoded versus undecoded
 packets, packets with and without process metadata, and packets shortened by
