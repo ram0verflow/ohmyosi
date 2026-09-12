@@ -38,8 +38,9 @@ type JoinResult struct {
 }
 
 type Exclusion struct {
-	FlowID string `json:"flow_id"`
-	Reason string `json:"reason"`
+	FlowID    string `json:"flow_id"`
+	Condition string `json:"condition,omitempty"`
+	Reason    string `json:"reason"`
 }
 
 type tuple struct {
@@ -152,6 +153,9 @@ func Join(trace []Event, truths []TruthFlow) JoinResult {
 			if e.HTTPHost == "" {
 				e.HTTPHost = prior.HTTPHost
 			}
+			if prior.PreExisting {
+				e.PreExisting = true
+			}
 			latest[k] = e
 		}
 	}
@@ -167,14 +171,14 @@ func Join(trace []Event, truths []TruthFlow) JoinResult {
 	for _, truth := range truths {
 		observed, ok := latest[truthTuple(truth)]
 		if !ok {
-			out.Excluded = append(out.Excluded, Exclusion{FlowID: truth.FlowID, Reason: "no exact 5-tuple in trace"})
+			out.Excluded = append(out.Excluded, Exclusion{FlowID: truth.FlowID, Condition: truth.Condition, Reason: "no exact 5-tuple in trace"})
 			continue
 		}
 		out.Matched++
 		out.Events = append(out.Events, identityeval.Event{
 			Type: "flow", At: observed.At, IP: observed.RemoteIP,
 			FlowID: truth.FlowID, Truth: truth.Truth, TruthSource: truth.TruthSource,
-			SNI: observed.SNI, HTTPHost: observed.HTTPHost, Condition: truth.Condition,
+			SNI: observed.SNI, HTTPHost: observed.HTTPHost, PreExisting: observed.PreExisting, Condition: truth.Condition,
 		})
 	}
 	sort.SliceStable(out.Events, func(i, j int) bool {
@@ -191,6 +195,16 @@ func WriteFixture(w io.Writer, events []identityeval.Event) error {
 	enc := json.NewEncoder(w)
 	for _, e := range events {
 		if err := enc.Encode(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func WriteExclusions(w io.Writer, exclusions []Exclusion) error {
+	enc := json.NewEncoder(w)
+	for _, exclusion := range exclusions {
+		if err := enc.Encode(exclusion); err != nil {
 			return err
 		}
 	}

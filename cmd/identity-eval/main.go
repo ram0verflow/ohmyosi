@@ -17,6 +17,7 @@ func main() {
 	trace := flag.String("trace", "", "raw evidence NDJSON written by ohmyosi -research-trace")
 	truth := flag.String("truth", "", "independent workload truth NDJSON")
 	fixtureOut := flag.String("fixture-out", "", "write the joined evaluation fixture for audit and reuse")
+	exclusionsOut := flag.String("exclusions-out", "", "write unmatched truth flows and reasons as NDJSON")
 	jsonOut := flag.Bool("json", false, "emit the complete machine-readable report")
 	flag.Parse()
 	direct := *input != ""
@@ -26,6 +27,8 @@ func main() {
 		os.Exit(2)
 	}
 	var events []identityeval.Event
+	var exclusions []researchtrace.Exclusion
+	joinedMatched, joinedTruth := 0, 0
 	if direct {
 		f, err := os.Open(*input)
 		if err != nil {
@@ -56,14 +59,29 @@ func main() {
 			fatal(err)
 		}
 		result := researchtrace.Join(traceEvents, truthFlows)
+		exclusions = result.Excluded
+		joinedMatched, joinedTruth = result.Matched, len(truthFlows)
 		for _, excluded := range result.Excluded {
 			fmt.Fprintf(os.Stderr, "excluded %s: %s\n", excluded.FlowID, excluded.Reason)
 		}
 		fmt.Fprintf(os.Stderr, "joined %d/%d truth flows by exact 5-tuple\n", result.Matched, len(truthFlows))
-		if result.Matched == 0 {
-			fatal(fmt.Errorf("no truth flow matched the trace"))
-		}
 		events = result.Events
+	}
+	if *exclusionsOut != "" {
+		f, err := os.Create(*exclusionsOut)
+		if err != nil {
+			fatal(err)
+		}
+		if err := researchtrace.WriteExclusions(f, exclusions); err != nil {
+			f.Close()
+			fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			fatal(err)
+		}
+	}
+	if joined && joinedMatched == 0 {
+		fatal(fmt.Errorf("no truth flow matched the trace (%d excluded)", joinedTruth))
 	}
 	if *fixtureOut != "" {
 		f, err := os.Create(*fixtureOut)

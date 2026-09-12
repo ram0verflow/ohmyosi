@@ -35,6 +35,9 @@ func main() {
 	dnsPort := flag.Int("dns-port", 53, "controlled DNS UDP port (use 53 for ohmyosi DNS decoding)")
 	runs := flag.Int("runs", 1, "number of randomized workload repetitions")
 	seed := flag.Int64("seed", 1, "randomization seed (record this with the truth manifest)")
+	preexistingReady := flag.String("preexisting-ready", "", "create this marker after opening a pre-capture TLS flow")
+	preexistingStart := flag.String("preexisting-start", "", "wait for this marker before sending data on the pre-capture flow")
+	preexistingTimeout := flag.Duration("preexisting-timeout", 10*time.Minute, "maximum wait for the preexisting-start marker")
 	hold := flag.Duration("hold", time.Second, "keep flows open after generation so capture can observe them")
 	flag.Parse()
 	if *out == "" {
@@ -52,6 +55,23 @@ func main() {
 	}
 	if *runs < 1 || *runs > 1000 {
 		fatal(errors.New("-runs must be between 1 and 1000"))
+	}
+	if (*preexistingReady == "") != (*preexistingStart == "") {
+		fatal(errors.New("-preexisting-ready and -preexisting-start must be supplied together"))
+	}
+	if *preexistingReady != "" {
+		if *preexistingReady == *preexistingStart {
+			fatal(errors.New("-preexisting-ready and -preexisting-start must be different files"))
+		}
+		if _, err := os.Stat(*preexistingReady); err == nil {
+			fatal(fmt.Errorf("preexisting-ready marker already exists: %s", *preexistingReady))
+		}
+		if _, err := os.Stat(*preexistingStart); err == nil {
+			fatal(fmt.Errorf("preexisting-start marker already exists: %s", *preexistingStart))
+		}
+	}
+	if *preexistingTimeout <= 0 {
+		fatal(errors.New("-preexisting-timeout must be positive"))
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -107,6 +127,24 @@ func main() {
 			client.Close()
 		}
 	}()
+
+	if *preexistingReady != "" {
+		preexisting, err := tlsHandshake(tlsAddr, "")
+		if err != nil {
+			fatal(err)
+		}
+		clients = append(clients, preexisting)
+		if err := createMarker(*preexistingReady); err != nil {
+			fatal(err)
+		}
+		if err := waitForMarker(ctx, *preexistingStart, *preexistingTimeout); err != nil {
+			fatal(err)
+		}
+		if _, err := io.WriteString(preexisting, "GET /preexisting HTTP/1.1\r\nHost: preexisting-not-observable.lab.test\r\nConnection: keep-alive\r\n\r\n"); err != nil {
+			fatal(err)
+		}
+		truths = append(truths, truth("preexisting-tls-no-sni", "tcp", preexisting.LocalAddr(), preexisting.RemoteAddr(), "preexisting.lab.test", "preexisting-no-sni"))
+	}
 
 	rng := mathrand.New(mathrand.NewSource(*seed))
 	for run := 1; run <= *runs; run++ {
@@ -318,6 +356,18 @@ func dnsResponse(query []byte, answer [4]byte) ([]byte, error) {
 }
 
 func tlsClient(address, serverName string) (*tls.Conn, error) {
+	conn, err := tlsHandshake(address, serverName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: encrypted-not-observable.lab.test\r\n\r\n"); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func tlsHandshake(address, serverName string) (*tls.Conn, error) {
 	raw, err := net.Dial("tcp4", address)
 	if err != nil {
 		return nil, err
@@ -327,11 +377,40 @@ func tlsClient(address, serverName string) (*tls.Conn, error) {
 		raw.Close()
 		return nil, err
 	}
-	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: encrypted-not-observable.lab.test\r\n\r\n"); err != nil {
-		conn.Close()
-		return nil, err
-	}
 	return conn, nil
+}
+
+func createMarker(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(f, "ready\n"); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func waitForMarker(ctx context.Context, path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		_, err := os.Stat(path)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for %s", path)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func truth(id, proto string, local, remote net.Addr, name, condition string) researchtrace.TruthFlow {

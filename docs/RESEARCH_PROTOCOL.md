@@ -99,7 +99,8 @@ Stop the monitor cleanly, then join and evaluate:
 go run ./cmd/identity-eval \
   -trace /tmp/ohmyosi-trace.ndjson \
   -truth /tmp/ohmyosi-truth.ndjson \
-  -fixture-out /tmp/ohmyosi-joined.ndjson
+  -fixture-out /tmp/ohmyosi-joined.ndjson \
+  -exclusions-out /tmp/ohmyosi-exclusions.ndjson
 ```
 
 The trace contains packet-derived DNS, SNI, HTTP Host, and exact flow tuples.
@@ -107,7 +108,9 @@ The truth file contains workload intent and exact tuples, but no prediction.
 The join requires all five tuple fields to match and reports every unmatched
 truth flow as an exclusion. The checked-in tests cover header parsing, strict
 schemas, independent truth sources, evidence updates, DNS withdrawal, tuple
-matching, and exclusion preservation.
+matching, and exclusion preservation. The exclusions file is part of the
+dataset: a flow missing from the capture is not silently treated as an
+abstention.
 
 Each repetition randomizes the five workload scenarios and prefixes truth IDs
 with its run number. Keep the seed fixed when comparing capture settings. For a
@@ -116,6 +119,21 @@ snap-length sweep, repeat the same workload command while starting ohmyosi with
 files. QUIC, ECH, encrypted DNS, and pre-capture connections remain explicit
 study conditions; absence of those rows must not be presented as measured
 evidence.
+
+To exercise a connection opened before capture, start the lab with a high DNS
+port and marker files:
+
+```sh
+/tmp/identity-lab -dns-port 18083 \
+  -preexisting-ready /tmp/identity-ready \
+  -preexisting-start /tmp/identity-start \
+  -out /tmp/ohmyosi-truth.ndjson
+```
+
+After it creates `identity-ready`, start ohmyosi, then create the start marker
+(`touch /tmp/identity-start`). The lab completes the already-established TLS
+flow and records its independent truth. The resulting row should be classified
+as `preexisting-no-sni`; it is not evidence that the daemon missed a packet.
 
 ## Controlled study
 

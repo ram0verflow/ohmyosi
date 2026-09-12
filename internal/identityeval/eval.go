@@ -28,6 +28,7 @@ type Event struct {
 	TruthSource string `json:"truth_source,omitempty"`
 	SNI         string `json:"sni,omitempty"`
 	HTTPHost    string `json:"http_host,omitempty"`
+	PreExisting bool   `json:"pre_existing,omitempty"`
 	Condition   string `json:"condition,omitempty"`
 }
 
@@ -46,6 +47,7 @@ type Prediction struct {
 	Condition   string  `json:"condition,omitempty"`
 	Label       string  `json:"label,omitempty"`
 	Evidence    string  `json:"evidence,omitempty"`
+	PreExisting bool    `json:"pre_existing,omitempty"`
 	Outcome     Outcome `json:"outcome"`
 }
 
@@ -295,7 +297,7 @@ func Evaluate(events []Event) Report {
 		view := dnsView{active: dns.active(e.IP, e.At), observed: dns[e.IP]}
 		for i, m := range methods {
 			label, evidence := m.fn(e, view)
-			p := Prediction{FlowID: e.FlowID, Truth: e.Truth, TruthSource: e.TruthSource, Condition: e.Condition, Label: label, Evidence: evidence}
+			p := Prediction{FlowID: e.FlowID, Truth: e.Truth, TruthSource: e.TruthSource, PreExisting: e.PreExisting, Condition: e.Condition, Label: label, Evidence: evidence}
 			switch {
 			case label == "":
 				p.Outcome = Abstain
