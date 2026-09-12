@@ -90,7 +90,7 @@ loopback port 53 so ohmyosi recognizes the packets as DNS; this command needs
 root on systems that reserve that port. It never contacts the internet:
 
 ```sh
-sudo /tmp/identity-lab -out /tmp/ohmyosi-truth.ndjson
+sudo /tmp/identity-lab -runs 10 -seed 42 -out /tmp/ohmyosi-truth.ndjson
 ```
 
 Stop the monitor cleanly, then join and evaluate:
@@ -109,11 +109,13 @@ truth flow as an exclusion. The checked-in tests cover header parsing, strict
 schemas, independent truth sources, evidence updates, DNS withdrawal, tuple
 matching, and exclusion preservation.
 
-This first live workload covers two TLS names on one address, a TLS flow that
-withholds SNI, cleartext HTTP Host, direct UDP, and overlapping DNS answers.
-QUIC, ECH, encrypted DNS, pre-capture connections, and snap-length sweeps remain
-explicit study conditions; absence of those rows must not be presented as
-measured evidence.
+Each repetition randomizes the five workload scenarios and prefixes truth IDs
+with its run number. Keep the seed fixed when comparing capture settings. For a
+snap-length sweep, repeat the same workload command while starting ohmyosi with
+`-snaplen 1600` and `-snaplen 128`, writing separate trace and joined-fixture
+files. QUIC, ECH, encrypted DNS, and pre-capture connections remain explicit
+study conditions; absence of those rows must not be presented as measured
+evidence.
 
 ## Controlled study
 
@@ -122,8 +124,9 @@ measured evidence.
    confirm it independently in server/application logs.
 2. Exercise clear DNS, encrypted DNS, TCP TLS, QUIC, ECH where available,
    connections opened before capture, and deliberately reduced snap lengths.
-3. Repeat cold- and warm-cache runs. Randomize destination order so a
-   last-answer cache is not helped by a fixed sequence.
+3. Repeat cold- and warm-cache runs with `identity-lab -runs N -seed S`.
+   Randomize destination order so a last-answer cache is not helped by a fixed
+   sequence, and reuse the seed when comparing snap lengths or capture modes.
 4. Join ground truth to captured flows by exact protocol, local address/port,
    and remote address/port. Never join by the destination label under
    evaluation. Preserve failures to join as excluded rows with reasons.

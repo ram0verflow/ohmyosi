@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	mathrand "math/rand"
 	"net"
 	"net/netip"
 	"os"
@@ -32,6 +33,8 @@ func main() {
 	ipText := flag.String("ip", "127.0.0.1", "loopback address shared by every controlled destination")
 	basePort := flag.Int("base-port", 18080, "HTTP port; TLS and UDP use the next two ports")
 	dnsPort := flag.Int("dns-port", 53, "controlled DNS UDP port (use 53 for ohmyosi DNS decoding)")
+	runs := flag.Int("runs", 1, "number of randomized workload repetitions")
+	seed := flag.Int64("seed", 1, "randomization seed (record this with the truth manifest)")
 	hold := flag.Duration("hold", time.Second, "keep flows open after generation so capture can observe them")
 	flag.Parse()
 	if *out == "" {
@@ -46,6 +49,9 @@ func main() {
 	}
 	if *dnsPort < 1 || *dnsPort > 65535 {
 		fatal(errors.New("-dns-port must be between 1 and 65535"))
+	}
+	if *runs < 1 || *runs > 1000 {
+		fatal(errors.New("-runs must be between 1 and 1000"))
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -102,58 +108,87 @@ func main() {
 		}
 	}()
 
-	// Resolve two names to one address. Both answers remain live, so an
-	// address-wide fallback must either guess or explicitly abstain.
-	queryDNS(dnsAddr, "alpha.lab.test")
-	alpha, err := tlsClient(tlsAddr, "alpha.lab.test")
-	if err != nil {
-		fatal(err)
+	rng := mathrand.New(mathrand.NewSource(*seed))
+	for run := 1; run <= *runs; run++ {
+		// Resolve two names to one address in randomized order. Both answers
+		// remain live, so an address-wide fallback must either guess or
+		// explicitly abstain.
+		for _, name := range shuffledNames(rng) {
+			queryDNS(dnsAddr, name)
+		}
+		for _, scenario := range shuffledScenarios(rng) {
+			before := len(truths)
+			prefix := fmt.Sprintf("run-%03d-", run)
+			switch scenario {
+			case "tls-alpha":
+				alpha, err := tlsClient(tlsAddr, "alpha.lab.test")
+				if err != nil {
+					fatal(err)
+				}
+				clients = append(clients, alpha)
+				truths = append(truths, truth(prefix+"tls-alpha", "tcp", alpha.LocalAddr(), alpha.RemoteAddr(), "alpha.lab.test", "shared-ip-tls-sni"))
+			case "tls-beta":
+				beta, err := tlsClient(tlsAddr, "beta.lab.test")
+				if err != nil {
+					fatal(err)
+				}
+				clients = append(clients, beta)
+				truths = append(truths, truth(prefix+"tls-beta", "tcp", beta.LocalAddr(), beta.RemoteAddr(), "beta.lab.test", "shared-ip-tls-sni"))
+			case "tls-alpha-no-sni":
+				// This application intends alpha but withholds SNI. A
+				// latest-answer DNS baseline guesses whichever name was last;
+				// an ambiguity-aware policy should abstain.
+				fallback, err := tlsClient(tlsAddr, "")
+				if err != nil {
+					fatal(err)
+				}
+				clients = append(clients, fallback)
+				truths = append(truths, truth(prefix+"tls-alpha-no-sni", "tcp", fallback.LocalAddr(), fallback.RemoteAddr(), "alpha.lab.test", "shared-ip-no-sni"))
+			case "http-clear":
+				clear, err := net.Dial("tcp4", httpAddr)
+				if err != nil {
+					fatal(err)
+				}
+				if _, err := io.WriteString(clear, "GET / HTTP/1.1\r\nHost: clear.lab.test\r\nConnection: keep-alive\r\n\r\n"); err != nil {
+					fatal(err)
+				}
+				clients = append(clients, clear)
+				truths = append(truths, truth(prefix+"http-clear", "tcp", clear.LocalAddr(), clear.RemoteAddr(), "clear.lab.test", "clear-http-host"))
+			case "udp-direct":
+				udpClient, err := net.Dial("udp4", udpAddr)
+				if err != nil {
+					fatal(err)
+				}
+				if _, err := udpClient.Write([]byte("identity-lab direct UDP")); err != nil {
+					fatal(err)
+				}
+				clients = append(clients, udpClient)
+				truths = append(truths, truth(prefix+"udp-direct", "udp", udpClient.LocalAddr(), udpClient.RemoteAddr(), "direct.lab.test", "no-visible-name"))
+			}
+			if len(truths) > before {
+				truths[len(truths)-1].Run = run
+				truths[len(truths)-1].Seed = *seed
+			}
+		}
 	}
-	clients = append(clients, alpha)
-	truths = append(truths, truth("tls-alpha", "tcp", alpha.LocalAddr(), alpha.RemoteAddr(), "alpha.lab.test", "shared-ip-tls-sni"))
-
-	queryDNS(dnsAddr, "beta.lab.test")
-	beta, err := tlsClient(tlsAddr, "beta.lab.test")
-	if err != nil {
-		fatal(err)
-	}
-	clients = append(clients, beta)
-	truths = append(truths, truth("tls-beta", "tcp", beta.LocalAddr(), beta.RemoteAddr(), "beta.lab.test", "shared-ip-tls-sni"))
-
-	// This application intends alpha but withholds SNI. The latest-answer DNS
-	// baseline guesses beta; an ambiguity-aware policy should abstain.
-	fallback, err := tlsClient(tlsAddr, "")
-	if err != nil {
-		fatal(err)
-	}
-	clients = append(clients, fallback)
-	truths = append(truths, truth("tls-alpha-no-sni", "tcp", fallback.LocalAddr(), fallback.RemoteAddr(), "alpha.lab.test", "shared-ip-no-sni"))
-
-	clear, err := net.Dial("tcp4", httpAddr)
-	if err != nil {
-		fatal(err)
-	}
-	if _, err := io.WriteString(clear, "GET / HTTP/1.1\r\nHost: clear.lab.test\r\nConnection: keep-alive\r\n\r\n"); err != nil {
-		fatal(err)
-	}
-	clients = append(clients, clear)
-	truths = append(truths, truth("http-clear", "tcp", clear.LocalAddr(), clear.RemoteAddr(), "clear.lab.test", "clear-http-host"))
-
-	udpClient, err := net.Dial("udp4", udpAddr)
-	if err != nil {
-		fatal(err)
-	}
-	if _, err := udpClient.Write([]byte("identity-lab direct UDP")); err != nil {
-		fatal(err)
-	}
-	clients = append(clients, udpClient)
-	truths = append(truths, truth("udp-direct", "udp", udpClient.LocalAddr(), udpClient.RemoteAddr(), "direct.lab.test", "no-visible-name"))
 
 	if err := writeTruth(*out, truths); err != nil {
 		fatal(err)
 	}
 	time.Sleep(*hold)
-	fmt.Printf("identity-lab: wrote %d independently labelled flows to %s\n", len(truths), *out)
+	fmt.Printf("identity-lab: wrote %d independently labelled flows across %d runs to %s (seed %d)\n", len(truths), *runs, *out, *seed)
+}
+
+func shuffledScenarios(rng *mathrand.Rand) []string {
+	scenarios := []string{"tls-alpha", "tls-beta", "tls-alpha-no-sni", "http-clear", "udp-direct"}
+	rng.Shuffle(len(scenarios), func(i, j int) { scenarios[i], scenarios[j] = scenarios[j], scenarios[i] })
+	return scenarios
+}
+
+func shuffledNames(rng *mathrand.Rand) []string {
+	names := []string{"alpha.lab.test", "beta.lab.test"}
+	rng.Shuffle(len(names), func(i, j int) { names[i], names[j] = names[j], names[i] })
+	return names
 }
 
 func serveTCP(ctx context.Context, wg *sync.WaitGroup, listener net.Listener) {

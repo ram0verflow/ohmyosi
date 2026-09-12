@@ -18,6 +18,8 @@ import (
 type TruthFlow struct {
 	Type        string `json:"type"`
 	At          int64  `json:"at"`
+	Run         int    `json:"run,omitempty"`
+	Seed        int64  `json:"seed,omitempty"`
 	FlowID      string `json:"flow_id"`
 	Proto       string `json:"proto"`
 	LocalIP     string `json:"local_ip"`
