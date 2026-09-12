@@ -474,14 +474,16 @@ Packets fold into flows; the UI gets a delta once a second.
   an extension or ingesting `chrome://net-export`.
 - **A sudo CLI can be killed** by whatever it is watching. Little Snitch runs as
   a NetworkExtension and cannot. Different threat model; know which one you have.
-- **Connections older than the daemon are half-blind.** You see their packets,
-  but the SYN and the ClientHello happened before you started, so there is no
-  SNI and often no DNS - just an address. Fixable: enumerate existing sockets at
-  startup with `lsof -i -n -P` and seed the flow table, so long-lived
-  connections are named from the first tick instead of never.
-- **Kernel drops are invisible.** tcpdump reports "packets dropped by kernel" on
-  exit and we throw it away. Under load that number is the difference between
-  "complete picture" and "most of one", so it belongs in the stats block.
+- **Connections older than the daemon are still half-blind.** We enumerate
+  existing sockets at startup with `lsof -i -n -P` and seed the flow table, so
+  long-lived connections appear from the first tick. Their opening handshake
+  happened before capture, though, so a seeded flow can honestly have no SNI or
+  DNS evidence; the UI and research trace keep that distinction explicit.
+- **Capture loss is reported when the backend exposes it.** The live stats show
+  packet decode misses, snaplen truncation, and pcapng interface/OS drop
+  counters with separate `known` flags. Classic pcap and some macOS capture
+  paths do not export drop counters, so an unknown counter is not presented as
+  zero.
 - **PID reuse** is not handled. A long-running session can in principle attribute
   a flow to the wrong process after a PID wraps.
 
