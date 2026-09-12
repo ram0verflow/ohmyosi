@@ -117,9 +117,15 @@ Each repetition randomizes the five workload scenarios and prefixes truth IDs
 with its run number. Keep the seed fixed when comparing capture settings. For a
 snap-length sweep, repeat the same workload command while starting ohmyosi with
 `-snaplen 1600` and `-snaplen 128`, writing separate trace and joined-fixture
-files. QUIC, ECH, encrypted DNS, and pre-capture connections remain explicit
-study conditions; absence of those rows must not be presented as measured
-evidence.
+files. Validate the sweep from the trace itself: every joined flow records its
+wire length, captured length, and a truncation flag. If an intentionally tiny
+snaplen (for example 32 bytes) produces no `capture_len < wire_len` rows, mark
+that condition **unvalidated** rather than claiming that the backend captured
+only 32 bytes. Some macOS pktap/tcpdump paths clamp or ignore the requested
+snaplen while still returning complete frames; preserve the command, stderr,
+and trace metadata so this behavior is visible. QUIC, ECH, encrypted DNS, and
+pre-capture connections remain explicit study conditions; absence of those rows
+must not be presented as measured evidence.
 
 To exercise a connection opened before capture, start the lab with a high DNS
 port and marker files:
