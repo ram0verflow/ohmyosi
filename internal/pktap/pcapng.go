@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,12 +37,15 @@ const (
 	btSHB = 0x0a0d0d0a
 	btIDB = 0x00000001
 	btSPB = 0x00000003
+	btISB = 0x00000005 // Interface Statistics Block
 	btEPB = 0x00000006
 	btPIB = 0x80000001 // Apple: Process Information Block
 
 	optEnd = 0
 
 	optIfTsresol = 9 // IDB: timestamp resolution
+	optIsbIfdrop = 5 // ISB: packets dropped by the interface
+	optIsbOSdrop = 7 // ISB: packets dropped by the operating system
 
 	optEpbFlags     = 2      // standard: bits 0-1 hold direction
 	optEpbPIBIndex  = 0x8001 // Apple: index into the PIB table
@@ -86,10 +90,29 @@ type ngReader struct {
 	procs  []ngProc // indexed by order of appearance within the section
 
 	buf []byte
+
+	// tcpdump may emit Interface Statistics Blocks while capturing or when a
+	// saved stream ends. Keep their latest values atomically so the API can
+	// report real loss when present without racing the capture goroutine.
+	interfaceDrops      atomic.Uint64
+	osDrops             atomic.Uint64
+	interfaceDropsKnown atomic.Bool
+	osDropsKnown        atomic.Bool
+	dropByIface         map[uint32]ngDropStats
+}
+
+type ngDropStats struct {
+	interfaceDrops uint64
+	osDrops        uint64
+	interfaceKnown bool
+	osKnown        bool
 }
 
 func newNgReader(r *bufio.Reader) (*ngReader, error) {
-	n := &ngReader{r: r, end: binary.LittleEndian, buf: make([]byte, 0, 64<<10)}
+	n := &ngReader{
+		r: r, end: binary.LittleEndian, buf: make([]byte, 0, 64<<10),
+		dropByIface: make(map[uint32]ngDropStats),
+	}
 	// The first block must be a section header; reading it establishes byte order.
 	bt, body, err := n.readBlock()
 	if err != nil {
@@ -149,6 +172,7 @@ func (n *ngReader) section(body []byte) error {
 	// Interface and process tables are scoped to the section.
 	n.ifaces = n.ifaces[:0]
 	n.procs = n.procs[:0]
+	n.dropByIface = make(map[uint32]ngDropStats)
 	return nil
 }
 
@@ -177,6 +201,13 @@ func (n *ngReader) u32(b []byte) uint32 {
 	return n.end.Uint32(b[:4])
 }
 
+func (n *ngReader) u64(b []byte) uint64 {
+	if len(b) < 8 {
+		return 0
+	}
+	return n.end.Uint64(b[:8])
+}
+
 // next returns the next packet, consuming and applying any interface, process
 // or section blocks it passes along the way.
 func (n *ngReader) next() (*ngPacket, error) {
@@ -192,6 +223,8 @@ func (n *ngReader) next() (*ngPacket, error) {
 			}
 		case btIDB:
 			n.addInterface(body)
+		case btISB:
+			n.addInterfaceStats(body)
 		case btPIB:
 			n.addProcess(body)
 		case btEPB:
@@ -210,6 +243,49 @@ func (n *ngReader) next() (*ngPacket, error) {
 		// Anything else is a block type we do not need. Skipping is correct:
 		// pcapng is explicitly designed so unknown blocks can be ignored.
 	}
+}
+
+// addInterfaceStats consumes the standard pcapng loss counters. They are
+// optional, so absence must remain distinguishable from a measured zero.
+// Multiple ISBs may update one interface; add only the delta so totals across
+// interfaces stay correct.
+func (n *ngReader) addInterfaceStats(body []byte) {
+	if len(body) < 12 {
+		return
+	}
+	ifaceID := n.u32(body)
+	previous := n.dropByIface[ifaceID]
+	current := previous
+	n.eachOption(body[12:], func(code uint16, val []byte) {
+		if len(val) < 8 {
+			return
+		}
+		switch code {
+		case optIsbIfdrop:
+			current.interfaceDrops = n.u64(val)
+			current.interfaceKnown = true
+		case optIsbOSdrop:
+			current.osDrops = n.u64(val)
+			current.osKnown = true
+		}
+	})
+	if current.interfaceKnown {
+		delta := current.interfaceDrops
+		if previous.interfaceKnown && current.interfaceDrops >= previous.interfaceDrops {
+			delta -= previous.interfaceDrops
+		}
+		n.interfaceDrops.Add(delta)
+		n.interfaceDropsKnown.Store(true)
+	}
+	if current.osKnown {
+		delta := current.osDrops
+		if previous.osKnown && current.osDrops >= previous.osDrops {
+			delta -= previous.osDrops
+		}
+		n.osDrops.Add(delta)
+		n.osDropsKnown.Store(true)
+	}
+	n.dropByIface[ifaceID] = current
 }
 
 func (n *ngReader) addInterface(body []byte) {

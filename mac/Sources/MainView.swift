@@ -199,7 +199,9 @@ struct MainView: View {
             let stats = GraphStats(
                 apps: scene.nodes.filter { $0.kind == .process }.count,
                 destinations: scene.nodes.filter { $0.kind == .destination }.count,
-                links: scene.edges.filter { $0.style == .link }.count
+                links: scene.edges.filter { $0.style == .link }.count,
+                nameEvidence: nameEvidenceSummary(store.stats),
+                captureHealth: captureHealthSummary(store.stats)
             )
             GraphCanvasView(
                 scene: scene, stats: stats,
@@ -211,5 +213,21 @@ struct MainView: View {
                 }
             }
         }
+    }
+
+    private func nameEvidenceSummary(_ stats: Stats?) -> String? {
+        guard let stats else { return nil }
+        return "\(stats.flow_names ?? 0)/\(stats.address_names ?? 0)/\(stats.without_name ?? 0)"
+    }
+
+    private func captureHealthSummary(_ stats: Stats?) -> String? {
+        guard let stats, let packets = stats.packets, packets > 0 else { return nil }
+        let decoded = Int((Double(stats.decoded ?? 0) / Double(packets) * 100).rounded())
+        let attributed = Int((Double(stats.packets_with_process ?? 0) / Double(packets) * 100).rounded())
+        var dropParts: [String] = []
+        if stats.interface_drops_known == true { dropParts.append("\(stats.interface_drops ?? 0)i") }
+        if stats.os_drops_known == true { dropParts.append("\(stats.os_drops ?? 0)o") }
+        let drops = dropParts.isEmpty ? "n/a" : dropParts.joined(separator: "/")
+        return "\(decoded)% decode · \(attributed)% pid · \(stats.truncated_packets ?? 0)t · \(drops)d"
     }
 }

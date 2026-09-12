@@ -173,6 +173,8 @@ struct NodePopupView: View {
                     bandTag(flow.band, score: flow.suspicionScore)
                 }
                 if let src = flow.remote.host_src { tag(src.uppercased(), tone: .normal) }
+                if flow.remote.name_scope == "address" { tag("ADDRESS-LEVEL", tone: .muted) }
+                if flow.remote.name_scope == "none" { tag(nameGapLabel(flow.remote.name_gap), tone: .warn) }
                 // The honest flags. These are the ones worth seeing without
                 // opening anything: nobody announced a name for this, or the
                 // connection predates us so its handshake is unrecoverable.
@@ -244,6 +246,14 @@ struct NodePopupView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.05), lineWidth: 0.5)
         )
+    }
+
+    private func nameGapLabel(_ gap: String?) -> String {
+        switch gap {
+        case "pre_existing": return "NAME UNKNOWN · PRE-EXISTING"
+        case "handshake_name_unavailable": return "NAME UNKNOWN · HANDSHAKE"
+        default: return "NAME UNKNOWN · NOT OBSERVED"
+        }
     }
 
     /// Block a single flow's destination: by domain if the machine named it

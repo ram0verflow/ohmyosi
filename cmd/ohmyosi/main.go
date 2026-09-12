@@ -277,6 +277,7 @@ func main() {
 	inv := api.InvestigateCtx{Names: names, Ranges: ranges, Owners: owners, Icons: icons, ASN: asnDB}
 
 	var pkts, decoded, undecoded atomic.Uint64
+	var packetsWithProcess, packetsWithoutProcess, truncatedPackets atomic.Uint64
 	started := time.Now()
 	hostname, _ := os.Hostname()
 
@@ -341,9 +342,16 @@ func main() {
 		known := len(sent)
 		sentMu.Unlock()
 
+		captureStats := src.CaptureStats()
 		st := &api.Stats{
 			Packets: pkts.Load(), Decoded: decoded.Load(), Undecoded: undecoded.Load(),
-			Flows: len(fs), ProcsKnown: known,
+			PacketsWithProcess:    packetsWithProcess.Load(),
+			PacketsWithoutProcess: packetsWithoutProcess.Load(),
+			TruncatedPackets:      truncatedPackets.Load(),
+			InterfaceDrops:        captureStats.InterfaceDrops, OSDrops: captureStats.OSDrops,
+			InterfaceDropsKnown: captureStats.InterfaceDropsKnown,
+			OSDropsKnown:        captureStats.OSDropsKnown,
+			Flows:               len(fs), ProcsKnown: known,
 		}
 		// Coverage across every live flow, so the number does not swing with
 		// whatever happened to change in this tick.
@@ -368,6 +376,14 @@ func main() {
 			}
 			if e.Host != "" {
 				st.WithName++
+				switch e.HostSrc {
+				case "sni", "http":
+					st.FlowNames++
+				case "dns", "rdns":
+					st.AddressNames++
+				}
+			} else {
+				st.WithoutName++
 			}
 			if e.Org != "" {
 				st.WithOrg++
@@ -412,7 +428,7 @@ func main() {
 				return
 			}
 			if p == nil {
-				continue // PTH_TYPE_DROP and friends
+				continue // PTH_TYPE_NONE or an unsupported future chained record
 			}
 			// Whether process attribution works can only be judged from real
 			// packets, and not from one: a couple genuinely have no owning
@@ -420,7 +436,7 @@ func main() {
 			// first fifty and then decide once.
 			if seen < 50 {
 				seen++
-				if p.PID > 0 {
+				if p.PID > 0 || p.EPID > 0 {
 					withPID++
 				}
 			} else {
@@ -434,6 +450,14 @@ func main() {
 				})
 			}
 			pkts.Add(1)
+			if p.PID > 0 || p.EPID > 0 {
+				packetsWithProcess.Add(1)
+			} else {
+				packetsWithoutProcess.Add(1)
+			}
+			if p.WireLen > len(p.Data) {
+				truncatedPackets.Add(1)
+			}
 			o := dec.Decode(p)
 			if o == nil {
 				undecoded.Add(1)

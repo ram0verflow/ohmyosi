@@ -403,20 +403,30 @@ function render(){
     const own=f.remote.owner?' <span class=own>'+f.remote.owner+(f.remote.age_days>0?' · '+f.remote.age_days+'d':'')+'</span>':'';
     const org=f.remote.org?' <span class=org>'+f.remote.org+(f.remote.org_detail?' '+f.remote.org_detail:'')+'</span>':'';
     const direct=f.direct_ip?' <span class=warn>direct-ip</span>':'';
+    const scope=f.remote.name_scope==='address'?' <span class=src>address-level</span>':'';
+    const gaps={pre_existing:'name unknown: pre-existing',handshake_name_unavailable:'name unknown: handshake unavailable',no_name_observed:'name unknown: not observed'};
+    const gap=f.remote.name_gap?' <span class=warn>'+gaps[f.remote.name_gap]+'</span>':'';
     const h=fav+(f.remote.host?'<span class=host>'+f.remote.host+'</span> <span class=src>'+(f.remote.host_src||'')+'</span>'
-              :'<span class=ip>'+f.remote.ip+'</span>')+own+org+direct+(f.pre_existing&&!f.remote.host?' <span class=src>pre-existing</span>':'');
+              :'<span class=ip>'+f.remote.ip+'</span>')+scope+gap+own+org+direct;
     const qs=(f.queries&&f.queries.length)?'<div class=q>resolving '+f.queries.slice(-6).join(', ')+(f.queries.length>6?' …':'')+'</div>':'';
     return '<tr class="'+(f.state==='closed'?'closed':'')+'"><td>'+icon+name+'<td>'+f.proto+'<td>'+h+qs+'<td>'+f.remote.port+
       '<td class=n>'+fmt(f.bytes_up)+'<td class=n>'+fmt(f.bytes_down)+'<td>'+f.state+'</tr>';
   }).join('');
   const pct=(a,b)=>b?Math.round(100*a/b)+'%':'—';
+  const drops=stats&&(stats.interface_drops_known||stats.os_drops_known)
+    ?[stats.interface_drops_known?stats.interface_drops+' interface':'',stats.os_drops_known?stats.os_drops+' OS':''].filter(Boolean).join(' / ')
+    :'n/a';
   document.getElementById('s').textContent=
     (host?host.hostname+' · '+host.iface+' · ':'')+
     (stats?stats.live_flows+' flows · process '+pct(stats.with_process,stats.live_flows)+
       ' · named '+pct(stats.with_name,stats.live_flows)+
+      ' ('+stats.flow_names+' flow / '+stats.address_names+' address / '+stats.without_name+' unknown)'+
       ' · org '+pct(stats.with_org,stats.live_flows)+
       ' · UNIDENTIFIED '+stats.unidentified+
       ' · direct-ip '+stats.direct_ip+
+      ' · capture '+pct(stats.decoded,stats.packets)+' decoded'+
+      ' · pid '+pct(stats.packets_with_process,stats.packets)+
+      ' · trunc '+stats.truncated_packets+' · drops '+drops+
       ' · '+stats.prefixes+' prefixes · ':'')+
     procs.size+' processes';
 }

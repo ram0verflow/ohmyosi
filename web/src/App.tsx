@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { NetworkCanvas } from "./NetworkCanvas";
 import { useEvents } from "./hooks/useEvents";
-import type { Flow } from "./types";
+import type { Envelope, Flow } from "./types";
 import "./App.css";
 
 export default function App() {
@@ -33,8 +33,10 @@ export default function App() {
         <div className={`dot ${connected ? "on" : ""}`} />
         <div className="meta">
           {host?.hostname ?? "—"} · {stats?.live_flows ?? 0} flows · named{" "}
-          {pct(stats?.with_name, stats?.live_flows)} · org {pct(stats?.with_org, stats?.live_flows)} · direct-ip{" "}
-          {stats?.direct_ip ?? 0}
+          {pct(stats?.with_name, stats?.live_flows)} ({stats?.flow_names ?? 0} flow / {stats?.address_names ?? 0}{" "}
+          address / {stats?.without_name ?? 0} unknown) · capture {pct(stats?.decoded, stats?.packets)} decoded · pid{" "}
+          {pct(stats?.packets_with_process, stats?.packets)} · trunc {stats?.truncated_packets ?? 0} · drops{" "}
+          {dropSummary(stats)}
         </div>
         <label className="toggle">
           <input type="checkbox" checked={showSelf} onChange={(e) => setShowSelf(e.target.checked)} />
@@ -68,12 +70,34 @@ export default function App() {
                   {line}
                 </p>
               ))}
+              <p className="evidence">name evidence: {nameEvidence(selected)}</p>
             </div>
           )}
         </aside>
       </div>
     </div>
   );
+}
+
+function nameEvidence(flow: Flow) {
+  if (flow.remote.name_scope === "flow") return "flow-specific";
+  if (flow.remote.name_scope === "address") return "address-level; shared IPs may be ambiguous";
+  switch (flow.remote.name_gap) {
+    case "pre_existing":
+      return "unknown; connection predates capture";
+    case "handshake_name_unavailable":
+      return "unknown; handshake absent, unreadable, or encrypted";
+    default:
+      return "unknown; no name observed";
+  }
+}
+
+function dropSummary(stats?: Envelope["stats"]) {
+  if (!stats?.interface_drops_known && !stats?.os_drops_known) return "n/a";
+  const values = [];
+  if (stats.interface_drops_known) values.push(`${stats.interface_drops} interface`);
+  if (stats.os_drops_known) values.push(`${stats.os_drops} OS`);
+  return values.join(" / ");
 }
 
 function pct(a?: number, b?: number) {

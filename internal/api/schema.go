@@ -77,6 +77,13 @@ type Endpoint struct {
 	// Empty Host with a routable IP usually means QUIC or ECH - see docs.
 	Host    string `json:"host,omitempty"`
 	HostSrc string `json:"host_src,omitempty"`
+	// NameScope says how narrowly Host applies: "flow" for evidence read from
+	// this connection, "address" for DNS/PTR evidence that may describe any
+	// tenant on a shared IP, and "none" when no name was observed. NameGap then
+	// explains the honest limit without pretending we can distinguish ECH from
+	// a missed or truncated handshake.
+	NameScope string `json:"name_scope,omitempty"`
+	NameGap   string `json:"name_gap,omitempty"`
 
 	// Org is who owns the address space - Cloudflare, Amazon, Google - from
 	// published allocation lists. It answers a DIFFERENT question from Host:
@@ -166,19 +173,32 @@ type FlowView struct {
 }
 
 type Stats struct {
-	Packets    uint64 `json:"packets"`
-	Decoded    uint64 `json:"decoded"`
-	Undecoded  uint64 `json:"undecoded"`
-	Flows      int    `json:"flows"`
-	ProcsKnown int    `json:"procs_known"`
+	Packets               uint64 `json:"packets"`
+	Decoded               uint64 `json:"decoded"`
+	Undecoded             uint64 `json:"undecoded"`
+	PacketsWithProcess    uint64 `json:"packets_with_process"`
+	PacketsWithoutProcess uint64 `json:"packets_without_process"`
+	TruncatedPackets      uint64 `json:"truncated_packets"`
+	InterfaceDrops        uint64 `json:"interface_drops"`
+	OSDrops               uint64 `json:"os_drops"`
+	InterfaceDropsKnown   bool   `json:"interface_drops_known"`
+	OSDropsKnown          bool   `json:"os_drops_known"`
+	Flows                 int    `json:"flows"`
+	ProcsKnown            int    `json:"procs_known"`
 
 	// Coverage over every live flow, not just the ones in this message. These
 	// are the numbers to watch: the goal is that everything leaving the machine
 	// is attributed to a process and resolved to a name someone recognizes.
 	LiveFlows   int `json:"live_flows"`
 	WithProcess int `json:"with_process"`
-	WithName    int `json:"with_name"` // a hostname: who you asked for
-	WithOrg     int `json:"with_org"`  // an organisation: where it is hosted
+	WithName    int `json:"with_name"` // any hostname, regardless of evidence scope
+	// FlowNames came from this flow's SNI/HTTP handshake. AddressNames came
+	// from DNS/PTR and may be ambiguous on a shared address. WithoutName is
+	// explicit rather than forcing clients to infer it from subtraction.
+	FlowNames    int `json:"flow_names"`
+	AddressNames int `json:"address_names"`
+	WithoutName  int `json:"without_name"`
+	WithOrg      int `json:"with_org"` // an organisation: where it is hosted
 	// Unidentified is the number that matters: flows we can say nothing about
 	// beyond an address. Reported rather than hidden.
 	Unidentified int `json:"unidentified"`
@@ -198,6 +218,7 @@ type Stats struct {
 // process/destination pair is new against the on-disk history; dec is the rule
 // verdict and enforced whether a block was actually applied.
 func View(f flow.Flow, remote Endpoint, verdict score.Result, firstContact bool, dec rules.Decision, enforced bool) FlowView {
+	classifyNameEvidence(f, &remote)
 	hostSrc := remote.HostSrc
 	v := FlowView{
 		ID: f.ID, Proto: string(f.Proto), PID: f.DisplayPID(), Comm: f.DisplayComm(), Iface: f.Iface,
@@ -222,4 +243,23 @@ func View(f flow.Flow, remote Endpoint, verdict score.Result, firstContact bool,
 		}
 	}
 	return v
+}
+
+func classifyNameEvidence(f flow.Flow, remote *Endpoint) {
+	switch remote.HostSrc {
+	case "sni", "http":
+		remote.NameScope = "flow"
+	case "dns", "rdns":
+		remote.NameScope = "address"
+	default:
+		remote.NameScope = "none"
+		switch {
+		case f.PreExisting:
+			remote.NameGap = "pre_existing"
+		case f.Remote.Port() == 443:
+			remote.NameGap = "handshake_name_unavailable"
+		default:
+			remote.NameGap = "no_name_observed"
+		}
+	}
 }

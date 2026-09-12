@@ -140,6 +140,22 @@ the fact. Software dialling a hardcoded address looks exactly like this. It is
 counted in the header and badged in the table rather than left as an unexplained
 blank.
 
+### What the capture could not prove
+
+The API and both UIs report uncertainty instead of turning it into a confident
+label. Every remote endpoint has a `name_scope`: `flow` means the name came
+from that connection's SNI or HTTP Host, `address` means DNS/PTR evidence that
+may be ambiguous on a shared IP, and `none` means no name was observed. When it
+is `none`, `name_gap` says whether the flow predates capture, a TLS/QUIC name was
+unavailable, or no naming evidence was seen at all. `handshake_name_unavailable`
+deliberately does not guess between ECH, truncation, and a missed handshake.
+
+Capture health is reported beside naming coverage: decoded versus undecoded
+packets, packets with and without process metadata, and packets shortened by
+the configured snap length. Standard pcapng interface/OS drop counters are
+shown when the capture stream provides them. When it does not, drops are
+reported as unavailable—not zero.
+
 ### What changed since yesterday
 
 A live graph can only ever show now. The question people actually have about

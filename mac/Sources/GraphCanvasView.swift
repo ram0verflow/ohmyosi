@@ -380,6 +380,12 @@ struct GraphCanvasView: View {
                 statPill("\(stats.apps)", "apps")
                 statPill("\(stats.destinations)", "destinations")
                 statPill("\(stats.links)", "paths")
+                if let names = stats.nameEvidence {
+                    statPill(names, "names flow/address/unknown")
+                }
+                if let capture = stats.captureHealth {
+                    statPill(capture, "capture")
+                }
             }
 
             Spacer(minLength: 12)
@@ -478,4 +484,6 @@ struct GraphStats {
     let apps: Int
     let destinations: Int
     let links: Int
+    let nameEvidence: String?
+    let captureHealth: String?
 }

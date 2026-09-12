@@ -3,6 +3,8 @@ export type Endpoint = {
   port: number;
   host?: string;
   host_src?: string;
+  name_scope?: "flow" | "address" | "none";
+  name_gap?: "pre_existing" | "handshake_name_unavailable" | "no_name_observed";
   org?: string;
   org_detail?: string;
   org_src?: string;
@@ -45,7 +47,7 @@ export type Proc = {
 export type Envelope = {
   type: "hello" | "tick";
   t: number;
-  host?: { hostname: string; iface: string; version: string };
+  host?: { hostname: string; iface: string; pktap: boolean; version: string };
   flows?: Flow[];
   procs?: Proc[];
   gone?: string[];
@@ -55,5 +57,18 @@ export type Envelope = {
     with_org: number;
     unidentified: number;
     direct_ip: number;
+    flow_names: number;
+    address_names: number;
+    without_name: number;
+    packets: number;
+    decoded: number;
+    undecoded: number;
+    packets_with_process: number;
+    packets_without_process: number;
+    truncated_packets: number;
+    interface_drops: number;
+    os_drops: number;
+    interface_drops_known: boolean;
+    os_drops_known: boolean;
   };
 };

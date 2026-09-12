@@ -112,6 +112,16 @@ type Packet struct {
 	Data    []byte // the actual frame, valid until the next Read
 }
 
+// CaptureStats are loss counters exported by the capture format. Drop counters
+// are optional in pcapng and unavailable in classic pcap, so each value has a
+// separate Known bit; zero without Known would falsely claim a perfect capture.
+type CaptureStats struct {
+	InterfaceDrops      uint64
+	OSDrops             uint64
+	InterfaceDropsKnown bool
+	OSDropsKnown        bool
+}
+
 // packetReader is the shared shape of pcapgo's classic and pcapng readers.
 type packetReader interface {
 	ReadPacketData() ([]byte, gopacket.CaptureInfo, error)
@@ -338,9 +348,24 @@ func (s *Source) diag(doing string, cause error) error {
 // failure.
 func (s *Source) Stderr() string { return s.errW.String() }
 
+// CaptureStats returns the latest loss counters the stream has actually
+// reported. A live tcpdump often writes these only at shutdown, while some
+// pcapng producers emit them periodically.
+func (s *Source) CaptureStats() CaptureStats {
+	if s.ng == nil {
+		return CaptureStats{}
+	}
+	return CaptureStats{
+		InterfaceDrops:      s.ng.interfaceDrops.Load(),
+		OSDrops:             s.ng.osDrops.Load(),
+		InterfaceDropsKnown: s.ng.interfaceDropsKnown.Load(),
+		OSDropsKnown:        s.ng.osDropsKnown.Load(),
+	}
+}
+
 // Read returns the next packet, blocking until the stream is readable.
 //
-// A Packet with PID == -1 carries no process attribution: either the capture is
+// A Packet with PID <= 0 carries no process attribution: either the capture is
 // not pktap, or this particular packet arrived on an interface that is not.
 // The returned Data aliases an internal buffer and is valid only until the next
 // call.
@@ -377,7 +402,14 @@ func (s *Source) Read() (*Packet, error) {
 		return nil, nil
 	}
 	p.Ts = ci.Timestamp
-	p.WireLen = ci.Length
+	// A classic DLT_PKTAP record's lengths include the metadata header, while
+	// Packet.Data does not. Preserve the actual frame length so truncation can
+	// be measured without labelling every pktap packet as truncated.
+	headerLen := len(raw) - len(p.Data)
+	p.WireLen = ci.Length - headerLen
+	if p.WireLen < len(p.Data) {
+		p.WireLen = len(p.Data)
+	}
 	return p, nil
 }
 
@@ -418,7 +450,8 @@ func parse(b []byte) (*Packet, error) {
 		return nil, fmt.Errorf("pktap: implausible header length %d", hlen)
 	}
 	if le.Uint32(b[offTypeNext:]) != typePacket {
-		// PTH_TYPE_DROP and friends. Not an error, just nothing to route.
+		// PTH_TYPE_NONE or a future chained record. There is no documented
+		// pktap drop-record type; capture loss comes from pcapng statistics.
 		return nil, nil
 	}
 

@@ -32,7 +32,13 @@ Controls panel accepts it for the current session.
   "flows": [ ... ],
   "gone":  ["1c69ef95adf652ba"],
   "stats": { "packets": 91422, "decoded": 90310, "undecoded": 1112,
-             "flows": 37, "procs_known": 22 }
+             "packets_with_process": 90102, "packets_without_process": 1320,
+             "truncated_packets": 4,
+             "interface_drops": 0, "interface_drops_known": false,
+             "os_drops": 0, "os_drops_known": false,
+             "flows": 37, "procs_known": 22,
+             "live_flows": 31, "flow_names": 18,
+             "address_names": 7, "without_name": 6 }
 }
 ```
 
@@ -59,7 +65,8 @@ re-serializing several hundred flows every time.
   "iface": "en0",
   "local":  { "ip": "192.168.1.5", "port": 52341 },
   "remote": { "ip": "104.18.32.7", "port": 443,
-              "host": "notion.so", "host_src": "sni" },
+              "host": "notion.so", "host_src": "sni",
+              "name_scope": "flow" },
   "bytes_up": 2104, "bytes_down": 88213,
   "pkts_up": 18,    "pkts_down": 71,
   "first_seen": 1757147990.11, "last_seen": 1757148003.40,
@@ -74,6 +81,8 @@ re-serializing several hundred flows every time.
 | `pid` | `0` means the kernel gave us no attribution for this flow. |
 | `comm` | Kernel's name, **truncated to 16 characters**. Prefer the matching `proc.name`. |
 | `host_src` | `sni` \| `http` \| `dns` \| `rdns` — see below. |
+| `name_scope` | `flow` \| `address` \| `none` — how narrowly the name evidence applies. |
+| `name_gap` | Present when `name_scope` is `none`; explains why no name is available. |
 | `state` | `new` on first sight, `active` after, `closed` once a FIN or RST is seen. |
 | `self` | ohmyosi's own reverse-DNS traffic. Hide by default. |
 
@@ -104,6 +113,40 @@ An empty `host` on a routable address is normal and means one of:
 
 The UI must handle this gracefully — a bare IP with an ASN-ish label is far
 better than a blank node.
+
+`name_gap` avoids collapsing all of those cases into a blank while also
+avoiding claims the capture cannot support:
+
+- **`pre_existing`** — the connection predates observation, so its handshake
+  cannot be recovered.
+- **`handshake_name_unavailable`** — a port-443 flow had no readable name. This
+  can mean ECH, a missed or truncated TLS/QUIC handshake, or an unsupported
+  handshake; the field intentionally does not choose among them.
+- **`no_name_observed`** — no naming evidence was observed for another kind of
+  flow.
+
+## Capture quality and coverage
+
+Every `stats` object describes the whole live capture, not just flows changed
+in that tick:
+
+- `decoded` and `undecoded` expose how many captured records did or did not
+  normalize into an IP flow. `undecoded` includes non-IP and unsupported frames
+  as well as malformed input; it is a coverage gap, not automatically an error.
+- `packets_with_process` and `packets_without_process` expose pktap attribution
+  coverage. A zero PID on an individual flow still means unattributed.
+- `truncated_packets` counts records whose captured bytes were shorter than
+  their original wire length. This commonly reflects `-snaplen` and can explain
+  an unavailable handshake name.
+- `interface_drops` and `os_drops` are standard pcapng Interface Statistics
+  Block counters. Their matching `*_known` fields are essential: a known zero
+  is evidence of no reported loss, while `false` means the stream did not
+  publish that counter. Classic pcap has no in-band drop telemetry.
+- `flow_names`, `address_names`, and `without_name` split hostname coverage by
+  evidentiary strength. `with_name` remains their total for older clients.
+
+Drop counters are optional and are often written only when a pcapng stream
+ends. A live `false` is therefore “not available yet,” never “zero drops.”
 
 ## Process
 

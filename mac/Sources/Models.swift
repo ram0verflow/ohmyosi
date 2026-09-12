@@ -39,6 +39,8 @@ struct Endpoint: Codable, Sendable, Hashable {
     let port: UInt16
     var host: String?
     var host_src: String?
+    var name_scope: String?
+    var name_gap: String?
     var org: String?
     var org_detail: String?
     var org_src: String?
@@ -203,11 +205,21 @@ struct Stats: Codable, Sendable {
     var packets: UInt64?
     var decoded: UInt64?
     var undecoded: UInt64?
+    var packets_with_process: UInt64?
+    var packets_without_process: UInt64?
+    var truncated_packets: UInt64?
+    var interface_drops: UInt64?
+    var os_drops: UInt64?
+    var interface_drops_known: Bool?
+    var os_drops_known: Bool?
     var flows: Int?
     var procs_known: Int?
     var live_flows: Int?
     var with_process: Int?
     var with_name: Int?
+    var flow_names: Int?
+    var address_names: Int?
+    var without_name: Int?
     var with_org: Int?
     var unidentified: Int?
     var direct_ip: Int?

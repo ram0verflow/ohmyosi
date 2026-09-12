@@ -70,6 +70,17 @@ func epb(iface uint32, data []byte, opts ...[]byte) []byte {
 	return block(btEPB, b)
 }
 
+func isb(iface uint32, opts ...[]byte) []byte {
+	b := u32(iface)
+	b = append(b, u32(0)...) // timestamp high
+	b = append(b, u32(0)...) // timestamp low
+	for _, o := range opts {
+		b = append(b, o...)
+	}
+	b = append(b, option(0, nil)...)
+	return block(btISB, b)
+}
+
 func read(t *testing.T, file []byte) []*ngPacket {
 	t.Helper()
 	r, err := newNgReader(bufio.NewReader(bytes.NewReader(file)))
@@ -176,6 +187,50 @@ func TestNgReaderPacketWithoutProcess(t *testing.T) {
 	}
 	if pkts[0].PID != 0 || pkts[0].Comm != "" {
 		t.Errorf("want no process, got %d %q", pkts[0].PID, pkts[0].Comm)
+	}
+}
+
+func TestNgReaderReportsOptionalDropStats(t *testing.T) {
+	var f []byte
+	f = append(f, shb()...)
+	f = append(f, idb(1)...)
+	f = append(f, isb(0,
+		option(optIsbIfdrop, binary.LittleEndian.AppendUint64(nil, 3)),
+		option(optIsbOSdrop, binary.LittleEndian.AppendUint64(nil, 7)))...)
+	f = append(f, epb(0, []byte{1})...)
+
+	r, err := newNgReader(bufio.NewReader(bytes.NewReader(f)))
+	if err != nil {
+		t.Fatalf("newNgReader: %v", err)
+	}
+	if _, err := r.next(); err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if !r.interfaceDropsKnown.Load() || r.interfaceDrops.Load() != 3 {
+		t.Errorf("interface drops: known=%v value=%d", r.interfaceDropsKnown.Load(), r.interfaceDrops.Load())
+	}
+	if !r.osDropsKnown.Load() || r.osDrops.Load() != 7 {
+		t.Errorf("OS drops: known=%v value=%d", r.osDropsKnown.Load(), r.osDrops.Load())
+	}
+}
+
+func TestNgReaderDropStatsUpdateByDelta(t *testing.T) {
+	var f []byte
+	f = append(f, shb()...)
+	f = append(f, idb(1)...)
+	f = append(f, isb(0, option(optIsbOSdrop, binary.LittleEndian.AppendUint64(nil, 2)))...)
+	f = append(f, isb(0, option(optIsbOSdrop, binary.LittleEndian.AppendUint64(nil, 5)))...)
+	f = append(f, epb(0, []byte{1})...)
+
+	r, err := newNgReader(bufio.NewReader(bytes.NewReader(f)))
+	if err != nil {
+		t.Fatalf("newNgReader: %v", err)
+	}
+	if _, err := r.next(); err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if got := r.osDrops.Load(); got != 5 {
+		t.Errorf("OS drops: got %d want latest cumulative value 5", got)
 	}
 }
 
