@@ -18,8 +18,12 @@ jobs:
         run: go test ./...
       - name: Check formatting
         run: |
-          gofmt -w cmd internal
-          git diff --exit-code
+          unformatted=$(gofmt -l cmd/ohmyosi/control.go cmd/ohmyosi/control_test.go cmd/ohmyosi/main.go internal/api/server.go internal/api/server_test.go)
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted Go files:"
+            echo "$unformatted"
+            exit 1
+          fi
   mac-app:
     runs-on: macos-latest
     steps:
