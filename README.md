@@ -114,9 +114,10 @@ Tuesday are very different things, and no amount of AWS makes them look alike.
 A redacted registrant is a normal answer and is reported as such rather than
 blanked.
 
-Ownership is only looked up for names the machine stated - SNI or a DNS answer
-we watched. A reverse-DNS name is the hoster's own, so asking who registered
-`ec2-…compute.amazonaws.com` would just report Amazon a second time.
+Ownership is only looked up for names the machine stated - flow-specific SNI
+or HTTP Host, or a DNS answer we watched. A reverse-DNS name is the hoster's
+own, so asking who registered `ec2-…compute.amazonaws.com` would just report
+Amazon a second time.
 
 RDAP is off by default because it is the one part of ohmyosi that makes network
 requests, and looking up a domain tells the registry you are interested in it.
@@ -133,10 +134,11 @@ ohmyosi's own graph flagged as self-traffic, like everything else it does.
 ### direct-ip
 
 A flow flagged `direct-ip` is one where the machine never announced where it was
-going: no TLS SNI, and no DNS answer we witnessed pointing at that address.
-Everything shown about the far end is inference after the fact. Software dialling
-a hardcoded address looks exactly like this. It is counted in the header and
-badged in the table rather than left as an unexplained blank.
+going: no TLS SNI or HTTP Host on that flow, and no DNS answer we witnessed
+pointing at that address. Everything shown about the far end is inference after
+the fact. Software dialling a hardcoded address looks exactly like this. It is
+counted in the header and badged in the table rather than left as an unexplained
+blank.
 
 ### What changed since yesterday
 

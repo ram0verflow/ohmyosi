@@ -26,7 +26,7 @@ hoster and would just report the hoster again.
 
 | Rank | Source | Answers | Cost |
 |---|---|---|---|
-| 1 | TLS SNI | who the client asked for | free, already parsed |
+| 1 | TLS SNI / HTTP Host | who this exact flow asked for | free, already parsed |
 | 2 | Sniffed DNS response | who the app looked up | free, already parsed |
 | 3 | Reverse DNS (PTR) | usually the hoster | one network round trip |
 | 4 | ASN → organization | who owns the address space | offline database |
@@ -34,6 +34,12 @@ hoster and would just report the hoster again.
 
 All five are implemented. Ranks 1-2 and the allocation table are offline; rank 5
 is behind `-rdap`.
+
+SNI and HTTP Host are scoped to the connection that carried them. They are
+never copied into the address cache: a CDN address can serve unrelated tenants,
+so lending one flow's handshake name to another would turn strong evidence into
+a confident false label. DNS and PTR remain explicitly lower-confidence,
+address-level fallbacks.
 
 ## Offline first
 

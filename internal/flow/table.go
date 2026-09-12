@@ -53,7 +53,8 @@ type Flow struct {
 	PktsUp    uint64
 	PktsDown  uint64
 
-	SNI string // straight off the ClientHello, when we saw one
+	SNI      string // straight off this flow's outbound ClientHello, when seen
+	HTTPHost string // straight off this flow's outbound cleartext HTTP request
 	// JA4 is the TLS client fingerprint of whatever opened this connection,
 	// from the ClientHello. It names the software, not the destination, and it
 	// survives ECH - so it is the one identity signal left when the SNI is gone.
@@ -224,8 +225,14 @@ func (t *Table) Observe(o *decode.Obs) {
 	if o.Iface != "" {
 		f.Iface = o.Iface
 	}
-	if o.SNI != "" {
+	// Destination names from application protocols are statements about this
+	// exact outbound connection. Never attach an inbound request's Host/SNI to
+	// its remote client, and never promote either name to an address-wide cache.
+	if outbound && o.SNI != "" {
 		f.SNI = o.SNI
+	}
+	if outbound && o.HTTPHost != "" {
+		f.HTTPHost = o.HTTPHost
 	}
 	if o.JA4 != "" {
 		f.JA4 = o.JA4

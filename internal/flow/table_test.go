@@ -67,6 +67,49 @@ func TestPIDNotClobberedByReturnTraffic(t *testing.T) {
 	}
 }
 
+func TestApplicationNamesStayOnTheirOriginatingFlow(t *testing.T) {
+	tb := testTable("192.168.1.5")
+	sharedIP := "104.18.32.7"
+
+	tls := obs("192.168.1.5", 51001, sharedIP, 443, 100, pktap.DirOut)
+	tls.SNI = "alpha.example"
+	tb.Observe(tls)
+
+	http := obs("192.168.1.5", 51002, sharedIP, 80, 100, pktap.DirOut)
+	http.HTTPHost = "beta.example"
+	tb.Observe(http)
+
+	unnamed := obs("192.168.1.5", 51003, sharedIP, 443, 100, pktap.DirOut)
+	tb.Observe(unnamed)
+
+	byPort := map[uint16]Flow{}
+	for _, f := range tb.All() {
+		byPort[f.Local.Port()] = f
+	}
+	if f := byPort[51001]; f.SNI != "alpha.example" || f.HTTPHost != "" {
+		t.Fatalf("TLS evidence moved or changed: SNI=%q HTTP=%q", f.SNI, f.HTTPHost)
+	}
+	if f := byPort[51002]; f.SNI != "" || f.HTTPHost != "beta.example" {
+		t.Fatalf("HTTP evidence moved or changed: SNI=%q HTTP=%q", f.SNI, f.HTTPHost)
+	}
+	if f := byPort[51003]; f.SNI != "" || f.HTTPHost != "" {
+		t.Fatalf("unnamed shared-IP flow borrowed evidence: SNI=%q HTTP=%q", f.SNI, f.HTTPHost)
+	}
+}
+
+func TestInboundApplicationNameDoesNotLabelRemoteClient(t *testing.T) {
+	tb := testTable("192.168.1.5")
+	in := obs("203.0.113.9", 51001, "192.168.1.5", 8080, 100, pktap.DirIn)
+	in.HTTPHost = "local-service.example"
+	in.SNI = "local-service.example"
+	tb.Observe(in)
+
+	f := tb.All()[0]
+	if f.SNI != "" || f.HTTPHost != "" {
+		t.Fatalf("inbound request mislabeled remote client: SNI=%q HTTP=%q", f.SNI, f.HTTPHost)
+	}
+}
+
 // When neither endpoint is in the local set (VPN transit, loopback), fall back
 // to the kernel's direction flag rather than guessing.
 func TestOrientationFallsBackToKernelFlag(t *testing.T) {

@@ -73,7 +73,7 @@ re-serializing several hundred flows every time.
 | `id` | Stable for a 5-tuple across daemon restarts. Use it as the node key. |
 | `pid` | `0` means the kernel gave us no attribution for this flow. |
 | `comm` | Kernel's name, **truncated to 16 characters**. Prefer the matching `proc.name`. |
-| `host_src` | `sni` \| `dns` \| `rdns` — see below. |
+| `host_src` | `sni` \| `http` \| `dns` \| `rdns` — see below. |
 | `state` | `new` on first sight, `active` after, `closed` once a FIN or RST is seen. |
 | `self` | ohmyosi's own reverse-DNS traffic. Hide by default. |
 
@@ -84,17 +84,20 @@ consecutive ticks.
 ### host_src, and why a host can be missing
 
 - **`sni`** — read straight off the TLS ClientHello. The strongest signal: it is
-  literally the name the client asked for.
+  literally the name this flow asked for. It is never reused by another flow.
+- **`http`** — read from this flow's cleartext HTTP Host header. Like SNI, it is
+  scoped to the exact connection and never copied into the address cache.
 - **`dns`** — sniffed from a DNS response, attributed to the name the
   application queried rather than the CNAME target, so you get `notion.so`
-  instead of `cdn.notion.akamai.net`.
+  instead of `cdn.notion.akamai.net`. This is an address-level fallback and can
+  be ambiguous when several names share one address.
 - **`rdns`** — a PTR record. Often the hosting provider, not the site. Show it
   more faintly.
 
 An empty `host` on a routable address is normal and means one of:
 
-- **QUIC.** UDP/443 with a ClientHello encrypted inside the Initial packet.
-  Chrome speaks QUIC to most Google properties, so expect a lot of this.
+- **QUIC whose Initial packet was absent, truncated, or could not be decoded.**
+  Readable QUIC Initials are decoded and their SNI remains flow-specific.
 - **Encrypted Client Hello.** As ECH rolls out the SNI stops being readable.
 - The connection reused an address whose lookup happened before the daemon
   started, and reverse DNS had nothing.

@@ -29,12 +29,10 @@ const (
 // Rank orders sources by how much the name tells you about intent.
 func (s Source) Rank() int {
 	switch s {
-	case SrcSNI:
+	case SrcSNI, SrcHTTP:
 		return 4
 	case SrcDNS:
 		return 3
-	case SrcHTTP:
-		return 2
 	case SrcRDNS:
 		return 1
 	}
@@ -47,7 +45,10 @@ type entry struct {
 	at   time.Time
 }
 
-// Names is an address-to-hostname cache fed by three sources.
+// Names is an address-to-hostname cache fed only by address-level evidence:
+// sniffed DNS responses and optional PTR lookups. Flow-specific evidence such
+// as TLS SNI and HTTP Host must stay on its originating 5-tuple; putting it in
+// this cache lets one tenant on a shared CDN address mislabel another flow.
 type Names struct {
 	mu      sync.RWMutex
 	m       map[netip.Addr]entry
@@ -110,18 +111,20 @@ func (n *Names) Run(ctx context.Context, workers int) {
 	}
 }
 
-// Learn records a name from a sniffed DNS response or a TLS handshake.
-func (n *Names) Learn(ip netip.Addr, name string, src Source) {
+// LearnDNS records a name from a sniffed DNS response. This deliberately does
+// not accept a Source: callers cannot accidentally put flow-scoped SNI or HTTP
+// evidence into the address-wide cache.
+func (n *Names) LearnDNS(ip netip.Addr, name string) {
 	if !ip.IsValid() || name == "" {
 		return
 	}
 	name = strings.TrimSuffix(name, ".")
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if cur, ok := n.m[ip]; ok && cur.src.Rank() > src.Rank() && cur.name != "" {
+	if cur, ok := n.m[ip]; ok && cur.src.Rank() > SrcDNS.Rank() && cur.name != "" {
 		return
 	}
-	n.m[ip] = entry{name: name, src: src, at: time.Now()}
+	n.m[ip] = entry{name: name, src: SrcDNS, at: time.Now()}
 }
 
 // Lookup returns the best known name for an address, queueing a reverse lookup

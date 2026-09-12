@@ -72,7 +72,8 @@ type Endpoint struct {
 	Port uint16 `json:"port"`
 	// Host is the best name we have. HostSrc says where it came from:
 	// "sni" (read off the TLS handshake, what the client asked for),
-	// "dns" (sniffed lookup), "rdns" (PTR record, often just the hoster).
+	// "http" (this flow's cleartext Host), "dns" (sniffed address lookup),
+	// or "rdns" (PTR record, often just the hoster).
 	// Empty Host with a routable IP usually means QUIC or ECH - see docs.
 	Host    string `json:"host,omitempty"`
 	HostSrc string `json:"host_src,omitempty"`

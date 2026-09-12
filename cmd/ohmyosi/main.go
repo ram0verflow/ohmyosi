@@ -293,14 +293,14 @@ func main() {
 	}
 
 	// build assembles an envelope, resolving names for each flow. A flow's own
-	// SNI wins over the address cache: it is what this client actually asked
-	// for, whereas one address can serve a hundred names.
+	// SNI or HTTP Host wins over the address cache: it is what this connection
+	// actually asked for, whereas one address can serve a hundred names.
 	build := func(typ string, fs []flow.Flow, gone []string, allProcs bool) api.Envelope {
 		env := api.Envelope{Type: typ, T: float64(time.Now().UnixNano()) / 1e9, Gone: gone}
 		env.Flows = make([]api.FlowView, 0, len(fs))
 		needed := make(map[int32]bool, len(fs))
 		for _, f := range fs {
-			e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, inv)
+			e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, f.HTTPHost, inv)
 			fc := hist.FirstContact(histKey(f.DisplayComm(), e))
 			v := rate(f, e, procs, beacons, fc)
 			dec := ruleset.Decide(targetOf(f, e, procs))
@@ -356,7 +356,7 @@ func main() {
 			if f.DisplayPID() > 0 {
 				st.WithProcess++
 			}
-			e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, inv)
+			e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, f.HTTPHost, inv)
 			fc := hist.FirstContact(histKey(f.DisplayComm(), e))
 			switch rate(f, e, procs, beacons, fc).Band {
 			case "notable":
@@ -440,13 +440,7 @@ func main() {
 				continue
 			}
 			for _, r := range o.DNS {
-				names.Learn(r.IP, r.Name, enrich.SrcDNS)
-			}
-			if o.SNI != "" {
-				names.Learn(o.Dst, o.SNI, enrich.SrcSNI)
-			}
-			if o.HTTPHost != "" {
-				names.Learn(o.Dst, o.HTTPHost, enrich.SrcHTTP)
+				names.LearnDNS(r.IP, r.Name)
 			}
 			table.Observe(o)
 			decoded.Add(1)
@@ -583,7 +577,7 @@ func main() {
 				if f.Self {
 					continue
 				}
-				e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, inv)
+				e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, f.HTTPHost, inv)
 				if ruleset.Decide(targetOf(f, e, procs)).Blocked() {
 					conns = append(conns, enforce.Conn{
 						Proto:   string(f.Proto),

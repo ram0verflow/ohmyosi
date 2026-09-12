@@ -24,7 +24,7 @@ type InvestigateCtx struct {
 // hardware and not who you are talking to - and a UI that merges them into one
 // confident label is lying by simplification. Showing the steps lets a person
 // see which layer a name came from and discount it accordingly.
-func Investigate(ip netip.Addr, port uint16, sni string, c InvestigateCtx) Endpoint {
+func Investigate(ip netip.Addr, port uint16, sni, httpHost string, c InvestigateCtx) Endpoint {
 	e := Endpoint{IP: ip.String(), Port: port, AgeDays: -1}
 	var trail []string
 
@@ -33,6 +33,9 @@ func Investigate(ip netip.Addr, port uint16, sni string, c InvestigateCtx) Endpo
 	case sni != "":
 		e.Host, e.HostSrc = sni, string(enrich.SrcSNI)
 		trail = append(trail, fmt.Sprintf("resolved to %s (sni)", sni))
+	case httpHost != "":
+		e.Host, e.HostSrc = httpHost, string(enrich.SrcHTTP)
+		trail = append(trail, fmt.Sprintf("resolved to %s (http host)", httpHost))
 	default:
 		if c.Names != nil {
 			if h, src := c.Names.Lookup(ip); h != "" {
