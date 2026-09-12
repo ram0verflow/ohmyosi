@@ -79,8 +79,10 @@ type ConditionReport struct {
 }
 
 type Report struct {
-	Flows   int            `json:"flows"`
-	Methods []MethodReport `json:"methods"`
+	Flows            int            `json:"flows"`
+	TruncatedFlows   int            `json:"truncated_flows"`
+	PreExistingFlows int            `json:"preexisting_flows"`
+	Methods          []MethodReport `json:"methods"`
 }
 
 // Load reads newline-delimited evaluation events. Line order is the observed
@@ -292,12 +294,19 @@ func Evaluate(events []Event) Report {
 		reports[i].Method = m.name
 	}
 	dns := dnsState{}
+	truncatedFlows, preExistingFlows := 0, 0
 	for _, e := range events {
 		if e.Type == "dns" {
 			dns.learn(e)
 			continue
 		}
 		view := dnsView{active: dns.active(e.IP, e.At), observed: dns[e.IP]}
+		if e.Truncated {
+			truncatedFlows++
+		}
+		if e.PreExisting {
+			preExistingFlows++
+		}
 		for i, m := range methods {
 			label, evidence := m.fn(e, view)
 			p := Prediction{FlowID: e.FlowID, Truth: e.Truth, TruthSource: e.TruthSource, PreExisting: e.PreExisting, Condition: e.Condition, Label: label, Evidence: evidence}
@@ -352,7 +361,7 @@ func Evaluate(events []Event) Report {
 		}
 		flows = r.Total
 	}
-	return Report{Flows: flows, Methods: reports}
+	return Report{Flows: flows, TruncatedFlows: truncatedFlows, PreExistingFlows: preExistingFlows, Methods: reports}
 }
 
 func metrics(correct, wrong, total int) (coverage, accuracyAnswered, correctRate float64) {

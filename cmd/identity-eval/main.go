@@ -106,7 +106,7 @@ func main() {
 		return
 	}
 
-	fmt.Printf("destination identity evaluation: %d independently labelled flows\n\n", report.Flows)
+	fmt.Printf("destination identity evaluation: %d independently labelled flows (truncated %d, pre-existing %d)\n\n", report.Flows, report.TruncatedFlows, report.PreExistingFlows)
 	fmt.Printf("%-17s %7s %7s %8s %9s %10s %12s\n", "method", "correct", "wrong", "abstain", "coverage", "accuracy", "correct rate")
 	for _, r := range report.Methods {
 		fmt.Printf("%-17s %7d %7d %8d %8.1f%% %9.1f%% %11.1f%%\n",

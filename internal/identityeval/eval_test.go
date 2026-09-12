@@ -90,3 +90,14 @@ func TestDNSZeroTTLWithdrawsPriorAnswer(t *testing.T) {
 		}
 	}
 }
+
+func TestReportPreservesCaptureFlags(t *testing.T) {
+	events, err := Load(strings.NewReader(`{"type":"flow","at":1,"ip":"203.0.113.1","flow_id":"f","truth":"x.test","truth_source":"server_log","pre_existing":true,"truncated":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := Evaluate(events)
+	if report.PreExistingFlows != 1 || report.TruncatedFlows != 1 {
+		t.Fatalf("capture flags = %+v", report)
+	}
+}
