@@ -162,6 +162,13 @@ as `preexisting-no-sni`; it is not evidence that the daemon missed a packet.
    identity accuracy. Product overhead is a feasibility result, not an identity
    result.
 
+The repository includes `research/measure-overhead.sh` for the first overhead
+pass. Build `/tmp/ohmyosi` and `/tmp/identity-lab`, then run the script as root;
+it records process CPU/RSS samples, read-only API latency, trace size, and the
+workload manifest under one timestamped directory in `/tmp`. Treat the maximum
+CPU/RSS values as exploratory until the run is repeated on an idle machine and
+with a matched no-monitor control.
+
 Before collecting the paper dataset, freeze the fixture generator, method
 definitions, exclusion rules, application/OS versions, and randomization seed.
 Keep exploratory runs separate from the frozen evaluation set.
