@@ -103,7 +103,8 @@ go run ./cmd/identity-eval \
   -exclusions-out /tmp/ohmyosi-exclusions.ndjson
 ```
 
-The trace contains packet-derived DNS, SNI, HTTP Host, and exact flow tuples.
+The trace contains packet-derived DNS, SNI, HTTP Host, exact flow tuples, and
+per-flow wire/captured lengths with a truncation flag.
 The truth file contains workload intent and exact tuples, but no prediction.
 The join requires all five tuple fields to match and reports every unmatched
 truth flow as an exclusion. The checked-in tests cover header parsing, strict

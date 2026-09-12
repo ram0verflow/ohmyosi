@@ -156,6 +156,15 @@ func Join(trace []Event, truths []TruthFlow) JoinResult {
 			if prior.PreExisting {
 				e.PreExisting = true
 			}
+			if prior.Truncated {
+				e.Truncated = true
+			}
+			if e.WireLen == 0 {
+				e.WireLen = prior.WireLen
+			}
+			if e.CaptureLen == 0 {
+				e.CaptureLen = prior.CaptureLen
+			}
 			latest[k] = e
 		}
 	}
@@ -179,6 +188,7 @@ func Join(trace []Event, truths []TruthFlow) JoinResult {
 			Type: "flow", At: observed.At, IP: observed.RemoteIP,
 			FlowID: truth.FlowID, Truth: truth.Truth, TruthSource: truth.TruthSource,
 			SNI: observed.SNI, HTTPHost: observed.HTTPHost, PreExisting: observed.PreExisting, Condition: truth.Condition,
+			WireLen: observed.WireLen, CaptureLen: observed.CaptureLen, Truncated: observed.Truncated,
 		})
 	}
 	sort.SliceStable(out.Events, func(i, j int) bool {

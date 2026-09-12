@@ -11,7 +11,7 @@ func TestLoadAndJoinExactTuple(t *testing.T) {
 		`{"type":"dns","at":1,"ip":"127.0.0.2","name":"alpha.test","ttl":60}`,
 		`{"type":"dns","at":1,"ip":"203.0.113.9","name":"unrelated.test","ttl":60}`,
 		`{"type":"flow","at":2,"flow_id":"product-id","proto":"tcp","local_ip":"127.0.0.1","local_port":50000,"remote_ip":"127.0.0.2","remote_port":443}`,
-		`{"type":"flow","at":3,"flow_id":"product-id","proto":"tcp","local_ip":"127.0.0.1","local_port":50000,"remote_ip":"127.0.0.2","remote_port":443,"sni":"alpha.test","pre_existing":true}`,
+		`{"type":"flow","at":3,"flow_id":"product-id","proto":"tcp","local_ip":"127.0.0.1","local_port":50000,"remote_ip":"127.0.0.2","remote_port":443,"sni":"alpha.test","pre_existing":true,"wire_len":500,"capture_len":128,"truncated":true}`,
 	}, "\n")
 	truthText := `{"type":"truth","at":2,"flow_id":"run-alpha","proto":"tcp","local_ip":"127.0.0.1","local_port":50000,"remote_ip":"127.0.0.2","remote_port":443,"truth":"alpha.test","truth_source":"workload_manifest","condition":"tls"}`
 	trace, err := LoadTrace(strings.NewReader(traceText))
@@ -30,7 +30,7 @@ func TestLoadAndJoinExactTuple(t *testing.T) {
 		t.Fatalf("got %d joined events, want DNS plus flow", len(got.Events))
 	}
 	flow := got.Events[1]
-	if flow.FlowID != "run-alpha" || flow.SNI != "alpha.test" || !flow.PreExisting || flow.Condition != "tls" {
+	if flow.FlowID != "run-alpha" || flow.SNI != "alpha.test" || !flow.PreExisting || !flow.Truncated || flow.CaptureLen != 128 || flow.Condition != "tls" {
 		t.Fatalf("joined flow = %+v", flow)
 	}
 }

@@ -32,11 +32,15 @@ type Event struct {
 	SNI         string `json:"sni,omitempty"`
 	HTTPHost    string `json:"http_host,omitempty"`
 	PreExisting bool   `json:"pre_existing,omitempty"`
+	WireLen     int    `json:"wire_len,omitempty"`
+	CaptureLen  int    `json:"capture_len,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
 }
 
 type flowSignature struct {
 	sni, httpHost string
 	preExisting   bool
+	truncated     bool
 }
 
 type Recorder struct {
@@ -81,7 +85,7 @@ func (r *Recorder) Flow(f flow.Flow) {
 	if r == nil {
 		return
 	}
-	sig := flowSignature{sni: f.SNI, httpHost: f.HTTPHost, preExisting: f.PreExisting}
+	sig := flowSignature{sni: f.SNI, httpHost: f.HTTPHost, preExisting: f.PreExisting, truncated: f.Truncated}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if prior, ok := r.seen[f.ID]; ok && prior == sig {
@@ -93,6 +97,7 @@ func (r *Recorder) Flow(f flow.Flow) {
 		LocalIP: f.Local.Addr().String(), LocalPort: f.Local.Port(),
 		RemoteIP: f.Remote.Addr().String(), RemotePort: f.Remote.Port(),
 		SNI: f.SNI, HTTPHost: f.HTTPHost, PreExisting: f.PreExisting,
+		WireLen: f.LastWireLen, CaptureLen: f.LastCaptureLen, Truncated: f.Truncated,
 	})
 }
 

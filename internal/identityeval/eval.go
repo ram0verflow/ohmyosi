@@ -29,6 +29,9 @@ type Event struct {
 	SNI         string `json:"sni,omitempty"`
 	HTTPHost    string `json:"http_host,omitempty"`
 	PreExisting bool   `json:"pre_existing,omitempty"`
+	WireLen     int    `json:"wire_len,omitempty"`
+	CaptureLen  int    `json:"capture_len,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
 	Condition   string `json:"condition,omitempty"`
 }
 

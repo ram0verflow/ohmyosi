@@ -29,6 +29,22 @@ func obs(src string, sp uint16, dst string, dp uint16, n int, dir pktap.Directio
 	}
 }
 
+func TestSnapshotRetainsCaptureTruncation(t *testing.T) {
+	tb := testTable("192.168.1.5")
+	o := obs("192.168.1.5", 52341, "104.18.32.7", 443, 200, pktap.DirOut)
+	o.CaptureLen = 64
+	f := tb.Observe(o)
+	if f == nil || !f.Truncated || f.LastWireLen != 200 || f.LastCaptureLen != 64 {
+		t.Fatalf("truncation snapshot = %+v", f)
+	}
+	full := obs("192.168.1.5", 52341, "104.18.32.7", 443, 80, pktap.DirOut)
+	full.CaptureLen = 80
+	tb.Observe(full)
+	if f := tb.All()[0]; !f.Truncated || f.LastWireLen != 80 || f.LastCaptureLen != 80 {
+		t.Fatalf("truncation was not retained: %+v", f)
+	}
+}
+
 // Both directions of one conversation must collapse into a single flow with
 // separate up/down counters. Getting this wrong shows up as every connection
 // appearing twice in the UI, which is the most obvious possible bug.

@@ -53,6 +53,7 @@ type Obs struct {
 	SPort, DPort uint16
 
 	WireLen    int // bytes on the wire
+	CaptureLen int // bytes captured after snaplen
 	PayloadLen int // transport payload only
 
 	SYN, FIN, RST bool
@@ -150,7 +151,7 @@ func (d *Decoder) Decode(p *pktap.Packet) *Obs {
 
 	o := &Obs{
 		Ts: p.Ts, PID: p.PID, Comm: p.Comm, EPID: p.EPID, EComm: p.EComm,
-		Iface: p.Ifname, Dir: p.Dir, WireLen: p.WireLen, Proto: Other,
+		Iface: p.Ifname, Dir: p.Dir, WireLen: p.WireLen, CaptureLen: len(p.Data), Proto: Other,
 	}
 	var haveIP bool
 	for _, lt := range d.decoded {

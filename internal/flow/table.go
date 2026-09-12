@@ -47,6 +47,11 @@ type Flow struct {
 
 	FirstSeen time.Time
 	LastSeen  time.Time
+	// LastWireLen and LastCaptureLen describe the most recent packet seen on
+	// this flow. Truncated stays true once any packet was cut by snaplen.
+	LastWireLen    int
+	LastCaptureLen int
+	Truncated      bool
 
 	BytesUp   uint64
 	BytesDown uint64
@@ -259,6 +264,10 @@ func (t *Table) Observe(o *decode.Obs) *Flow {
 		f.State = StateClosed
 	}
 	f.LastSeen = o.Ts
+	f.LastWireLen, f.LastCaptureLen = o.WireLen, o.CaptureLen
+	if o.CaptureLen > 0 && o.WireLen > o.CaptureLen {
+		f.Truncated = true
+	}
 	f.dirty = true
 	if o.Ts.After(t.lastTs) {
 		t.lastTs = o.Ts
