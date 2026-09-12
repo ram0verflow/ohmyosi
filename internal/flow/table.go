@@ -144,10 +144,12 @@ func (t *Table) isLocal(a netip.Addr) bool {
 	return t.local[a] || a.IsLoopback() || a.IsLinkLocalUnicast()
 }
 
-// Observe folds one packet into the table.
-func (t *Table) Observe(o *decode.Obs) {
+// Observe folds one packet into the table and returns an immutable snapshot of
+// the affected flow. Callers that export packet-adjacent evidence can use the
+// snapshot without racing the live table.
+func (t *Table) Observe(o *decode.Obs) *Flow {
 	if o == nil || !o.Src.IsValid() || !o.Dst.IsValid() {
-		return
+		return nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -261,6 +263,9 @@ func (t *Table) Observe(o *decode.Obs) {
 	if o.Ts.After(t.lastTs) {
 		t.lastTs = o.Ts
 	}
+	snapshot := *f
+	snapshot.Queries = append([]string(nil), f.Queries...)
+	return &snapshot
 }
 
 // Now is the capture's clock: the newest packet timestamp seen, or the wall

@@ -43,6 +43,7 @@ Root is required: `pktap` is privileged.
 -ranges FILE      allocation table (default <cache>/ranges.json)
 -read FILE        replay a saved .pcap/.pcapng instead of capturing live (no root needed)
 -record FILE      write this session's findings to an NDJSON recording
+-research-trace FILE  write raw DNS/flow evidence for the independent evaluator
 -play FILE        replay a recording (no root needed); -speed sets the rate
 -diff A,B         compare two recordings and print what changed, then exit
 -diff-limit N     entries printed per section of a diff (default 25)
@@ -417,6 +418,10 @@ go run ./cmd/identity-eval -input research/fixtures/shared-ip.ndjson
 The checked-in fixture reproduces shared-address contamination but is only a
 harness test, not a paper result. The frozen study design and threats to
 validity are in [`docs/RESEARCH_PROTOCOL.md`](docs/RESEARCH_PROTOCOL.md).
+`cmd/identity-lab` also creates real controlled loopback traffic and writes its
+intended destinations separately. Exact 5-tuples join that truth to raw
+ohmyosi observations; product labels are never accepted as truth. See the
+protocol for the end-to-end commands.
 
 ## Changing what you broadcast
 

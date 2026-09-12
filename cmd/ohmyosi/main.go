@@ -34,6 +34,7 @@ import (
 	"ohmyosi/internal/flow"
 	"ohmyosi/internal/history"
 	"ohmyosi/internal/pktap"
+	"ohmyosi/internal/researchtrace"
 	"ohmyosi/internal/rules"
 	"ohmyosi/internal/score"
 	"ohmyosi/internal/spoof"
@@ -56,6 +57,7 @@ func main() {
 	jsonOut := flag.Bool("json", false, "write NDJSON to stdout instead of serving a UI")
 	cacheDir := flag.String("cache", filepath.Join(os.TempDir(), "ohmyosi"), "cache directory for extracted icons")
 	recordFile := flag.String("record", "", "record this session's findings to an NDJSON file for later replay")
+	researchTraceFile := flag.String("research-trace", "", "write raw DNS and flow evidence for controlled identity evaluation")
 	playFile := flag.String("play", "", "replay a recorded session instead of capturing; needs no root")
 	playSpeed := flag.Float64("speed", 1, "playback speed multiplier (0 = as fast as possible)")
 	diffFiles := flag.String("diff", "", "compare two recordings: -diff baseline.ndjson,today.ndjson - reports which app/destination relationships are new, gone or changed, then exits")
@@ -280,6 +282,21 @@ func main() {
 	var packetsWithProcess, packetsWithoutProcess, truncatedPackets atomic.Uint64
 	started := time.Now()
 	hostname, _ := os.Hostname()
+	var researchRec *researchtrace.Recorder
+	if *researchTraceFile != "" {
+		researchRec, err = researchtrace.NewRecorder(*researchTraceFile, version, hostname, source)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ohmyosi: research trace: %v\n", err)
+			os.Exit(1)
+		}
+		defer func() {
+			if err := researchRec.Close(); err != nil {
+				logf("research trace close failed: %v", err)
+			}
+			logf("research trace: %s", researchRec.Summary())
+		}()
+		logf("research trace enabled: raw evidence only, writing %s", *researchTraceFile)
+	}
 
 	// sent tracks which processes each connected client already knows about, so
 	// ticks carry only newly-resolved ones. A new client gets the lot in hello.
@@ -467,9 +484,12 @@ func main() {
 				continue
 			}
 			for _, r := range o.DNS {
+				researchRec.DNS(r, o.Ts)
 				names.LearnDNS(r.IP, r.Name, time.Duration(r.TTL)*time.Second)
 			}
-			table.Observe(o)
+			if f := table.Observe(o); f != nil {
+				researchRec.Flow(*f)
+			}
 			decoded.Add(1)
 		}
 	}()

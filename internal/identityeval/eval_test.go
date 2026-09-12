@@ -73,3 +73,20 @@ func TestDNSExpiry(t *testing.T) {
 		}
 	}
 }
+
+func TestDNSZeroTTLWithdrawsPriorAnswer(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"dns","at":1,"ip":"203.0.113.1","name":"old.test","ttl":60}`,
+		`{"type":"dns","at":2,"ip":"203.0.113.1","name":"old.test","ttl":0}`,
+		`{"type":"flow","at":3,"ip":"203.0.113.1","flow_id":"f","truth":"old.test","truth_source":"server_log"}`,
+	}, "\n")
+	events, err := Load(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, report := range Evaluate(events).Methods {
+		if report.Method == "dns-latest" && report.Abstained != 1 {
+			t.Fatalf("withdrawn answer remained active: %+v", report)
+		}
+	}
+}

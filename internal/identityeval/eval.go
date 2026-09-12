@@ -28,6 +28,7 @@ type Event struct {
 	TruthSource string `json:"truth_source,omitempty"`
 	SNI         string `json:"sni,omitempty"`
 	HTTPHost    string `json:"http_host,omitempty"`
+	Condition   string `json:"condition,omitempty"`
 }
 
 type Outcome string
@@ -42,21 +43,34 @@ type Prediction struct {
 	FlowID      string  `json:"flow_id"`
 	Truth       string  `json:"truth"`
 	TruthSource string  `json:"truth_source"`
+	Condition   string  `json:"condition,omitempty"`
 	Label       string  `json:"label,omitempty"`
 	Evidence    string  `json:"evidence,omitempty"`
 	Outcome     Outcome `json:"outcome"`
 }
 
 type MethodReport struct {
-	Method           string       `json:"method"`
-	Total            int          `json:"total"`
-	Correct          int          `json:"correct"`
-	Wrong            int          `json:"wrong"`
-	Abstained        int          `json:"abstained"`
-	Coverage         float64      `json:"coverage"`
-	AccuracyAnswered float64      `json:"accuracy_answered"`
-	CorrectRate      float64      `json:"correct_rate"`
-	Predictions      []Prediction `json:"predictions"`
+	Method           string            `json:"method"`
+	Total            int               `json:"total"`
+	Correct          int               `json:"correct"`
+	Wrong            int               `json:"wrong"`
+	Abstained        int               `json:"abstained"`
+	Coverage         float64           `json:"coverage"`
+	AccuracyAnswered float64           `json:"accuracy_answered"`
+	CorrectRate      float64           `json:"correct_rate"`
+	Predictions      []Prediction      `json:"predictions"`
+	Conditions       []ConditionReport `json:"conditions,omitempty"`
+}
+
+type ConditionReport struct {
+	Condition        string  `json:"condition"`
+	Total            int     `json:"total"`
+	Correct          int     `json:"correct"`
+	Wrong            int     `json:"wrong"`
+	Abstained        int     `json:"abstained"`
+	Coverage         float64 `json:"coverage"`
+	AccuracyAnswered float64 `json:"accuracy_answered"`
+	CorrectRate      float64 `json:"correct_rate"`
 }
 
 type Report struct {
@@ -99,8 +113,8 @@ func Load(r io.Reader) ([]Event, error) {
 			if e.Name == "" {
 				return nil, fmt.Errorf("line %d: dns event needs name", line)
 			}
-			if e.TTL <= 0 {
-				return nil, fmt.Errorf("line %d: dns event needs a positive ttl", line)
+			if e.TTL < 0 {
+				return nil, fmt.Errorf("line %d: dns event needs a non-negative ttl", line)
 			}
 		case "flow":
 			if e.FlowID == "" || ids[e.FlowID] {
@@ -147,6 +161,19 @@ type dnsAnswer struct {
 type dnsState map[string][]dnsAnswer
 
 func (d dnsState) learn(e Event) {
+	// A zero TTL explicitly withdraws this name. Retaining the prior positive
+	// answer would make the evaluator disagree with the product's DNS cache.
+	if e.TTL == 0 {
+		prior := d[e.IP]
+		kept := prior[:0]
+		for _, a := range prior {
+			if a.name != e.Name {
+				kept = append(kept, a)
+			}
+		}
+		d[e.IP] = kept
+		return
+	}
 	d[e.IP] = append(d[e.IP], dnsAnswer{name: e.Name, observed: e.At, expiresAt: e.At + e.TTL})
 }
 
@@ -268,7 +295,7 @@ func Evaluate(events []Event) Report {
 		view := dnsView{active: dns.active(e.IP, e.At), observed: dns[e.IP]}
 		for i, m := range methods {
 			label, evidence := m.fn(e, view)
-			p := Prediction{FlowID: e.FlowID, Truth: e.Truth, TruthSource: e.TruthSource, Label: label, Evidence: evidence}
+			p := Prediction{FlowID: e.FlowID, Truth: e.Truth, TruthSource: e.TruthSource, Condition: e.Condition, Label: label, Evidence: evidence}
 			switch {
 			case label == "":
 				p.Outcome = Abstain
@@ -287,13 +314,45 @@ func Evaluate(events []Event) Report {
 	flows := 0
 	for i := range reports {
 		r := &reports[i]
-		answered := r.Correct + r.Wrong
-		r.Coverage = ratio(answered, r.Total)
-		r.AccuracyAnswered = ratio(r.Correct, answered)
-		r.CorrectRate = ratio(r.Correct, r.Total)
+		r.Coverage, r.AccuracyAnswered, r.CorrectRate = metrics(r.Correct, r.Wrong, r.Total)
+		byCondition := map[string]*ConditionReport{}
+		for _, p := range r.Predictions {
+			if p.Condition == "" {
+				continue
+			}
+			c := byCondition[p.Condition]
+			if c == nil {
+				c = &ConditionReport{Condition: p.Condition}
+				byCondition[p.Condition] = c
+			}
+			c.Total++
+			switch p.Outcome {
+			case Correct:
+				c.Correct++
+			case Wrong:
+				c.Wrong++
+			case Abstain:
+				c.Abstained++
+			}
+		}
+		conditionNames := make([]string, 0, len(byCondition))
+		for name := range byCondition {
+			conditionNames = append(conditionNames, name)
+		}
+		sort.Strings(conditionNames)
+		for _, name := range conditionNames {
+			c := byCondition[name]
+			c.Coverage, c.AccuracyAnswered, c.CorrectRate = metrics(c.Correct, c.Wrong, c.Total)
+			r.Conditions = append(r.Conditions, *c)
+		}
 		flows = r.Total
 	}
 	return Report{Flows: flows, Methods: reports}
+}
+
+func metrics(correct, wrong, total int) (coverage, accuracyAnswered, correctRate float64) {
+	answered := correct + wrong
+	return ratio(answered, total), ratio(correct, answered), ratio(correct, total)
 }
 
 func ratio(a, b int) float64 {

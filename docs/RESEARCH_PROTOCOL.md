@@ -67,6 +67,54 @@ expected result is deliberately uncomfortable: TTL-respecting `flow-first`
 still emits one wrong DNS fallback, while `flow-first-safe` trades that wrong
 answer for an abstention.
 
+## End-to-end controlled run
+
+Build the monitor and local workload:
+
+```sh
+go build -o /tmp/ohmyosi ./cmd/ohmyosi
+go build -o /tmp/identity-lab ./cmd/identity-lab
+```
+
+Start the monitor in one terminal. Reverse DNS, external ASN lookups, icons,
+and socket seeding are disabled so the trace contains only the controlled run
+and unrelated background capture, which the exact-tuple join filters out:
+
+```sh
+sudo /tmp/ohmyosi -i pktap,all -no-rdns -no-icons -asn=false -no-seed \
+  -research-trace /tmp/ohmyosi-trace.ndjson
+```
+
+In another terminal, run the workload. It binds a controlled DNS server to
+loopback port 53 so ohmyosi recognizes the packets as DNS; this command needs
+root on systems that reserve that port. It never contacts the internet:
+
+```sh
+sudo /tmp/identity-lab -out /tmp/ohmyosi-truth.ndjson
+```
+
+Stop the monitor cleanly, then join and evaluate:
+
+```sh
+go run ./cmd/identity-eval \
+  -trace /tmp/ohmyosi-trace.ndjson \
+  -truth /tmp/ohmyosi-truth.ndjson \
+  -fixture-out /tmp/ohmyosi-joined.ndjson
+```
+
+The trace contains packet-derived DNS, SNI, HTTP Host, and exact flow tuples.
+The truth file contains workload intent and exact tuples, but no prediction.
+The join requires all five tuple fields to match and reports every unmatched
+truth flow as an exclusion. The checked-in tests cover header parsing, strict
+schemas, independent truth sources, evidence updates, DNS withdrawal, tuple
+matching, and exclusion preservation.
+
+This first live workload covers two TLS names on one address, a TLS flow that
+withholds SNI, cleartext HTTP Host, direct UDP, and overlapping DNS answers.
+QUIC, ECH, encrypted DNS, pre-capture connections, and snap-length sweeps remain
+explicit study conditions; absence of those rows must not be presented as
+measured evidence.
+
 ## Controlled study
 
 1. Provision multiple controlled names that terminate on the same address, plus
@@ -76,9 +124,9 @@ answer for an abstention.
    connections opened before capture, and deliberately reduced snap lengths.
 3. Repeat cold- and warm-cache runs. Randomize destination order so a
    last-answer cache is not helped by a fixed sequence.
-4. Join ground truth to captured flows by a run nonce and controlled timing,
-   not by the destination label under evaluation. Preserve failures to join as
-   excluded rows with reasons.
+4. Join ground truth to captured flows by exact protocol, local address/port,
+   and remote address/port. Never join by the destination label under
+   evaluation. Preserve failures to join as excluded rows with reasons.
 5. Report per-condition and aggregate correct, wrong, and abstain counts;
    coverage, answered accuracy, and total correct rate; plus capture truncation,
    undecoded records, process-attribution coverage, and available drop counters.
