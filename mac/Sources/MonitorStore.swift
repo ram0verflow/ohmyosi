@@ -37,6 +37,9 @@ final class MonitorStore: ObservableObject {
     /// Enforcement state and capabilities, from /api/status.
     @Published private(set) var enforcing = false
     @Published private(set) var isRoot = false
+    @Published private(set) var controlAuthorized = false
+    private var controlToken = ""
+    var canControl: Bool { isRoot && controlAuthorized }
     @Published private(set) var interfaces: [String] = []
     /// Transient feedback for an action (import count, new MAC, an error).
     @Published var actionMessage: String?
@@ -150,6 +153,21 @@ final class MonitorStore: ObservableObject {
 
     // MARK: - Rules API
 
+    func setControlToken(_ token: String) {
+        controlToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        controlAuthorized = false
+        loadStatus()
+    }
+
+    private func authorize(_ req: inout URLRequest) -> Bool {
+        guard canControl else {
+            actionMessage = "Paste the daemon's control token in Controls to change settings."
+            return false
+        }
+        req.setValue("Bearer \(controlToken)", forHTTPHeaderField: "Authorization")
+        return true
+    }
+
     private func apiURL(path: String, query: String? = nil) -> URL? {
         guard var c = URLComponents(url: daemonURL, resolvingAgainstBaseURL: false) else { return nil }
         c.path = path
@@ -169,6 +187,7 @@ final class MonitorStore: ObservableObject {
         guard let url = apiURL(path: "/api/rules"), !match.isEmpty else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        guard authorize(&req) else { return }
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
             "scope": scope, "match": match, "action": action, "note": note ?? "",
@@ -182,6 +201,7 @@ final class MonitorStore: ObservableObject {
         guard let url = apiURL(path: "/api/rules", query: "id=\(id)") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "DELETE"
+        guard authorize(&req) else { return }
         URLSession.shared.dataTask(with: req) { [weak self] _, _, _ in
             Task { @MainActor in self?.loadRules() }
         }.resume()
@@ -194,6 +214,7 @@ final class MonitorStore: ObservableObject {
         guard let url = apiURL(path: "/api/rules", query: q) else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "DELETE"
+        guard authorize(&req) else { return }
         URLSession.shared.dataTask(with: req) { [weak self] _, _, _ in
             Task { @MainActor in self?.loadRules() }
         }.resume()
@@ -235,13 +256,18 @@ final class MonitorStore: ObservableObject {
 
     func loadStatus() {
         guard let url = apiURL(path: "/api/status") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        var req = URLRequest(url: url)
+        if !controlToken.isEmpty {
+            req.setValue("Bearer \(controlToken)", forHTTPHeaderField: "Authorization")
+        }
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
             guard let data,
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return }
             Task { @MainActor in
                 self?.enforcing = obj["enforcing"] as? Bool ?? false
                 self?.isRoot = obj["root"] as? Bool ?? false
+                self?.controlAuthorized = obj["control_authorized"] as? Bool ?? false
                 self?.interfaces = obj["interfaces"] as? [String] ?? []
             }
         }.resume()
@@ -253,6 +279,7 @@ final class MonitorStore: ObservableObject {
         guard let url = apiURL(path: path) else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        guard authorize(&req) else { return }
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         URLSession.shared.dataTask(with: req) { data, resp, err in

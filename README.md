@@ -10,8 +10,7 @@ process name onto every captured packet, and almost nothing uses it. ohmyosi
 does, then folds the packets into flows and puts names on both ends.
 
 No kernel extension, no entitlement, no Apple developer account. Observation on
-macOS just needs root. (Only *blocking* traffic needs Apple's permission, and
-ohmyosi does not block.)
+macOS needs root. Optional blocking is reactive and off by default.
 
 ## Build and run
 
@@ -319,14 +318,19 @@ without it every rule still shows what it *would* do (flows come back flagged
 Rules are `allow` or `block`, scoped by **app**, **domain**, **dest** (ip or
 ip:port) or **port**. Allow beats block, so a blanket "this app talks to
 nothing" can be carved out with a narrow "...except its update server". Rules
-live in `internal/rules`; edit them over `/api/rules`:
+live in `internal/rules`; editing them over `/api/rules` requires the current
+daemon's control token. At startup, the daemon prints the path to a root-only
+token file. Retrieve its contents with `sudo cat '<path printed at startup>'`
+and paste the token into the native app's Controls panel. It remains in the app's
+memory for that run. For scripting, supply it as a Bearer header:
 
 ```sh
 # block an app; block a tracker domain and everything under it
-curl -XPOST 127.0.0.1:7777/api/rules -d '{"scope":"app","match":"Spotify"}'
-curl -XPOST 127.0.0.1:7777/api/rules -d '{"scope":"domain","match":"doubleclick.net"}'
+control_token='paste the value from the root-only token file'
+curl -XPOST -H "Authorization: Bearer $control_token" 127.0.0.1:7777/api/rules -d '{"scope":"app","match":"Spotify"}'
+curl -XPOST -H "Authorization: Bearer $control_token" 127.0.0.1:7777/api/rules -d '{"scope":"domain","match":"doubleclick.net"}'
 curl 127.0.0.1:7777/api/rules            # list
-curl -XDELETE '127.0.0.1:7777/api/rules?id=<id>'
+curl -XDELETE -H "Authorization: Bearer $control_token" '127.0.0.1:7777/api/rules?id=<id>'
 ```
 
 Enforcement uses the two things root can do on macOS **without a kernel
@@ -361,10 +365,11 @@ removed. Nothing manual, and nothing left behind.
 Rules persist in `/Library/Application Support/ohmyosi/rules.json`, so a
 blocklist you import survives a reboot.
 
-**All of this is in the app.** The Controls panel (gear icon) turns enforcement
+**All of this is in the app after unlocking controls.** The Controls panel (gear icon) turns enforcement
 on and off, imports category blocklists (adult, ads, gambling, social), and
-changes the MAC and hostname - no command line. The flags below still exist for
-scripting, but you never need them.
+changes the MAC and hostname. A new token is generated each daemon run. The
+network viewer remains available without unlocking; API mutations are disabled
+without the token and cross-origin access is not enabled.
 
 **Testing the detector.** `internal/score/detection_test.go` is a benchmark of
 malicious vs ordinary traffic *shapes* (100% recall, 0 false alarms at the time

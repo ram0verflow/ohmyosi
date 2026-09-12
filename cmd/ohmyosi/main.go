@@ -470,6 +470,16 @@ func main() {
 
 	srv := api.NewServer(hello, procs.IconDir(), icons.Dir())
 	srv.Rules = ruleset
+	if os.Geteuid() == 0 && !*jsonOut {
+		var tokenPath string
+		srv.ControlToken, tokenPath, err = newControlToken(filepath.Join(persistentDataDir, "control"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ohmyosi: create control token: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.Remove(tokenPath)
+		logf("controls require authorization; retrieve the token with: sudo cat %q", tokenPath)
+	}
 	// Every action the daemon can take is reachable from the app, not just the
 	// command line. Each one that changes the system checks for root itself.
 	srv.IsRoot = os.Geteuid() == 0

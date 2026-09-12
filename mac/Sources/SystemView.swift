@@ -11,6 +11,7 @@ struct SystemView: View {
 
     @State private var iface = "en0"
     @State private var hostname = ""
+    @State private var tokenInput = ""
 
     private var ifaceOptions: [String] { store.interfaces.isEmpty ? ["en0"] : store.interfaces }
 
@@ -19,6 +20,7 @@ struct SystemView: View {
             header
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    authorizationSection
                     enforcementSection
                     blocklistSection
                     identitySection
@@ -48,9 +50,9 @@ struct SystemView: View {
             Image(systemName: "gearshape").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.inkSecondary)
             Text("Controls").font(TypeStyle.title(13)).foregroundStyle(Theme.ink)
             InfoButton(text: """
-            Everything the tool can **do**, driven from here — no terminal needed.
+            Actions require a control token from the daemon's root-only token file.
 
-            **Enforcement** turns block rules from "what they'd do" into actually blocking, via pf and /etc/hosts. **Blocklists** import maintained category lists as rules. **Identity** changes the MAC and hostname this machine broadcasts. Actions that change the system need the daemon running as root.
+            **Enforcement** turns block rules from "what they'd do" into actually blocking, via pf and /etc/hosts. **Blocklists** import maintained category lists as rules. **Identity** changes the MAC and hostname this machine broadcasts.
             """)
             Spacer(minLength: 0)
             collapseButton(onCollapse)
@@ -59,6 +61,28 @@ struct SystemView: View {
     }
 
     // MARK: Enforcement
+
+    private var authorizationSection: some View {
+        section("Authorization", icon: "lock") {
+            if store.canControl {
+                Text("Controls unlocked for this daemon session.")
+                    .font(TypeStyle.caption(9)).foregroundStyle(Theme.inkSecondary)
+            } else {
+                Text("The daemon prints the root-only token file path at startup. Run sudo cat on that path, then paste its token here. The app keeps it only in memory.")
+                    .font(TypeStyle.caption(9)).foregroundStyle(Theme.inkTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    SecureField("Control token", text: $tokenInput)
+                        .textFieldStyle(.plain).font(TypeStyle.mono(10))
+                    Button("Unlock") {
+                        store.setControlToken(tokenInput)
+                        tokenInput = ""
+                    }
+                    .disabled(tokenInput.isEmpty)
+                }
+            }
+        }
+    }
 
     private var enforcementSection: some View {
         section("Enforcement", icon: "shield.lefthalf.filled") {
@@ -76,9 +100,9 @@ struct SystemView: View {
                 Spacer(minLength: 6)
                 Toggle("", isOn: Binding(get: { store.enforcing }, set: { store.setEnforce($0) }))
                     .labelsHidden()
-                    .disabled(!store.isRoot)
+                    .disabled(!store.canControl)
             }
-            if !store.isRoot {
+            if !store.canControl {
                 rootNote
             }
         }
@@ -114,6 +138,7 @@ struct SystemView: View {
             .glassCapsule(rimOpacity: 0.28, shadowRadius: 4, shadowY: 1)
         }
         .buttonStyle(.plain)
+        .disabled(!store.canControl)
         .help("Import the \(label) blocklist")
     }
 
@@ -125,37 +150,37 @@ struct SystemView: View {
                 Picker("", selection: $iface) {
                     ForEach(ifaceOptions, id: \.self) { Text($0).tag($0) }
                 }
-                .labelsHidden().frame(width: 90).disabled(!store.isRoot)
+                .labelsHidden().frame(width: 90).disabled(!store.canControl)
                 Button { store.spoofMAC(iface) } label: {
                     Label("Randomize MAC", systemImage: "shuffle").font(TypeStyle.label(10))
                         .foregroundStyle(Theme.ink)
                         .frame(maxWidth: .infinity).padding(.vertical, 7)
                         .glassCapsule(rimOpacity: 0.28, shadowRadius: 4, shadowY: 1)
                 }
-                .buttonStyle(.plain).disabled(!store.isRoot)
+                .buttonStyle(.plain).disabled(!store.canControl)
             }
             HStack(spacing: 6) {
                 TextField("hostname", text: $hostname)
                     .textFieldStyle(.plain).font(TypeStyle.mono(11)).foregroundStyle(Theme.ink)
                     .padding(.horizontal, 8).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.05)))
-                    .disabled(!store.isRoot)
+                    .disabled(!store.canControl)
                 Button { store.setHostname(hostname) } label: {
                     Text("Set").font(TypeStyle.label(10)).foregroundStyle(Theme.ink)
                         .padding(.horizontal, 12).padding(.vertical, 7)
                         .glassCapsule(rimOpacity: 0.28, shadowRadius: 4, shadowY: 1)
                 }
                 .buttonStyle(.plain)
-                .disabled(!store.isRoot || hostname.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!store.canControl || hostname.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            if !store.isRoot {
+            if !store.canControl {
                 rootNote
             }
         }
     }
 
     private var rootNote: some View {
-        Text("Run the daemon with sudo to change the system.")
+        Text(store.isRoot ? "Unlock controls with the daemon token." : "Run the daemon with sudo to change the system.")
             .font(TypeStyle.caption(9)).foregroundStyle(Theme.band(.notable))
     }
 

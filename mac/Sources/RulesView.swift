@@ -93,7 +93,7 @@ struct RulesView: View {
                         .glassCapsule(rimOpacity: 0.35, shadowRadius: 4, shadowY: 1)
                 }
                 .buttonStyle(.plain)
-                .disabled(match.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!store.canControl || match.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(.horizontal, 12).padding(.bottom, 12)
@@ -162,6 +162,7 @@ struct RulesView: View {
                 Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(Theme.inkTertiary)
             }
             .buttonStyle(.plain)
+            .disabled(!store.canControl)
             .help("Remove rule")
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
@@ -208,6 +209,7 @@ struct CategoryListView: View {
                         .glassCapsule(rimOpacity: 0.3, shadowRadius: 3, shadowY: 1)
                 }
                 .buttonStyle(.plain)
+                .disabled(!store.canControl)
                 .help("Remove this entire category")
             }
             .padding(14)
@@ -233,6 +235,7 @@ struct CategoryListView: View {
                                 Image(systemName: "xmark.circle").font(.system(size: 10)).foregroundStyle(Theme.inkTertiary)
                             }
                             .buttonStyle(.plain)
+                            .disabled(!store.canControl)
                             .help("Remove just this domain")
                         }
                         .padding(.horizontal, 10).padding(.vertical, 6)

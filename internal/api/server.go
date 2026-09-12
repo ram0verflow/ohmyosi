@@ -1,8 +1,12 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +40,9 @@ type Server struct {
 	SpoofMAC    func(string) (string, error) // randomise an interface's MAC
 	SetHostname func(string) error           // set the machine hostname
 	Interfaces  func() []string              // interfaces a MAC change makes sense for
+	// ControlToken authorizes state-changing requests. An empty token disables
+	// every mutation, even when action hooks are installed in a root daemon.
+	ControlToken string
 }
 
 func NewServer(hello func() Envelope, iconDir, faviconDir string) *Server {
@@ -71,6 +78,35 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
+// authorizeControl protects the root daemon from other local processes and
+// cross-origin browser requests. Read-only inspection remains available.
+func (s *Server) authorizeControl(w http.ResponseWriter, r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		http.Error(w, "local host required", http.StatusForbidden)
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || u.Scheme != "http" || u.Host != r.Host || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			http.Error(w, "cross-origin control denied", http.StatusForbidden)
+			return false
+		}
+	}
+	const bearer = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if s.ControlToken == "" || !strings.HasPrefix(auth, bearer) ||
+		subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, bearer)), []byte(s.ControlToken)) != 1 {
+		http.Error(w, "control authorization required", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // Broadcast sends an envelope to every client. Slow clients are dropped rather
 // than allowed to stall the tick loop: a wedged browser tab must never apply
 // back-pressure to packet capture.
@@ -104,7 +140,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*") // so a Vite dev server can attach
 
 	ch := make(chan []byte, 32)
 	s.mu.Lock()
@@ -142,19 +177,17 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 }
 
 // rules serves the block/allow ruleset: GET lists, POST adds, DELETE removes by
-// ?id=. Kept small and CORS-open so the native app or a curl one-liner can drive
-// it. Enforcement of the rules happens in the daemon's tick loop, not here.
+// ?id=. Mutations require a separate control capability; viewing does not.
+// Enforcement of the rules happens in the daemon's tick loop, not here.
 func (s *Server) rules(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	switch r.Method {
-	case http.MethodOptions:
-		w.WriteHeader(http.StatusNoContent)
 	case http.MethodGet:
 		json.NewEncoder(w).Encode(s.Rules.List())
 	case http.MethodPost:
+		if !s.authorizeControl(w, r) {
+			return
+		}
 		var rule rules.Rule
 		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
 			http.Error(w, `{"error":"bad rule"}`, http.StatusBadRequest)
@@ -171,6 +204,9 @@ func (s *Server) rules(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(added)
 	case http.MethodDelete:
+		if !s.authorizeControl(w, r) {
+			return
+		}
 		// Delete a single rule by id, or a whole imported category by note.
 		if note := r.URL.Query().Get("note"); note != "" {
 			n, err := s.Rules.RemoveByNote(note)
@@ -193,27 +229,26 @@ func (s *Server) rules(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// corsJSON sets the headers every small action endpoint shares and answers a
-// CORS preflight. Returns true if the request was a preflight already handled.
-func corsJSON(w http.ResponseWriter, r *http.Request) bool {
+// actionJSON limits system actions to authenticated JSON POST requests.
+func (s *Server) actionJSON(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
-		return true
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
 	}
-	return false
+	return s.authorizeControl(w, r)
 }
 
 // status is what the app polls to know whether blocking is on, whether it is
 // allowed (root), and which interfaces a MAC change applies to.
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
-	if corsJSON(w, r) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	out := map[string]any{"root": s.IsRoot}
+	out["control_authorized"] = s.ControlToken != "" && s.authorizeStatus(r)
 	if s.Enforcing != nil {
 		out["enforcing"] = s.Enforcing()
 	}
@@ -223,8 +258,14 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(out)
 }
 
+func (s *Server) authorizeStatus(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	return strings.HasPrefix(auth, "Bearer ") &&
+		subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, "Bearer ")), []byte(s.ControlToken)) == 1
+}
+
 func (s *Server) enforce(w http.ResponseWriter, r *http.Request) {
-	if corsJSON(w, r) {
+	if !s.actionJSON(w, r) {
 		return
 	}
 	var body struct {
@@ -243,7 +284,7 @@ func (s *Server) enforce(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) blocklist(w http.ResponseWriter, r *http.Request) {
-	if corsJSON(w, r) {
+	if !s.actionJSON(w, r) {
 		return
 	}
 	var body struct {
@@ -262,7 +303,7 @@ func (s *Server) blocklist(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) spoofMAC(w http.ResponseWriter, r *http.Request) {
-	if corsJSON(w, r) {
+	if !s.actionJSON(w, r) {
 		return
 	}
 	var body struct {
@@ -281,7 +322,7 @@ func (s *Server) spoofMAC(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) hostname(w http.ResponseWriter, r *http.Request) {
-	if corsJSON(w, r) {
+	if !s.actionJSON(w, r) {
 		return
 	}
 	var body struct {
@@ -306,7 +347,6 @@ func jsonString(s string) string {
 
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(s.hello())
 }
 

@@ -31,6 +31,11 @@ make mac-app
 open dist/OhMyOSI.app
 ```
 
+The graph opens in read-only mode. To change rules or system settings, copy the
+current control token from the root-only file path printed by the daemon at
+startup (`sudo cat '<path>'`), then paste it into Controls → Authorization.
+The app keeps the token in memory and asks again after a daemon restart.
+
 ## DMG
 
 ```sh

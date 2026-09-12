@@ -13,7 +13,12 @@ The daemon emits one JSON object per message. This is the only contract between
 - `GET /icons/<icon_id>.png` — 64px PNG extracted from the application bundle.
 - `ohmyosi --json` — NDJSON on stdout instead of an HTTP server. Same envelopes.
 
-CORS is open, so a Vite dev server on another port can attach directly.
+The Vite dev server proxies `/events` and `/api` to the daemon on the same
+origin. The daemon does not enable cross-origin access. Read-only observation
+does not require authentication. Changing rules or system settings requires
+`Authorization: Bearer <current daemon control token>`; the daemon writes that
+token to a root-only file and reports the path at startup. The native app's
+Controls panel accepts it for the current session.
 
 ## Envelope
 

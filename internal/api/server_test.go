@@ -18,7 +18,15 @@ func testServer(t *testing.T) *Server {
 	}
 	s := NewServer(func() Envelope { return Envelope{Type: "hello"} }, t.TempDir(), "")
 	s.Rules = rs
+	s.ControlToken = "test-control-secret"
 	return s
+}
+
+func authorized(method, path, body string) *http.Request {
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Host = "127.0.0.1:7777"
+	r.Header.Set("Authorization", "Bearer test-control-secret")
+	return r
 }
 
 func TestRulesAPICRUD(t *testing.T) {
@@ -40,7 +48,7 @@ func TestRulesAPICRUD(t *testing.T) {
 	// Add one. Enabled should default true even though the body omitted it.
 	body := `{"scope":"app","match":"Spotify","action":"block"}`
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/rules", strings.NewReader(body)))
+	h.ServeHTTP(rec, authorized(http.MethodPost, "/api/rules", body))
 	if rec.Code != 200 {
 		t.Fatalf("POST status %d: %s", rec.Code, rec.Body)
 	}
@@ -57,7 +65,7 @@ func TestRulesAPICRUD(t *testing.T) {
 
 	// Delete it.
 	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/rules?id="+added.ID, nil))
+	h.ServeHTTP(rec, authorized(http.MethodDelete, "/api/rules?id="+added.ID, ""))
 	if rec.Code != 200 {
 		t.Fatalf("DELETE status %d", rec.Code)
 	}
@@ -75,6 +83,7 @@ func TestActionEndpoints(t *testing.T) {
 	var enforcing bool
 	var imported, spoofed, hostnamed string
 	s := NewServer(func() Envelope { return Envelope{} }, t.TempDir(), "")
+	s.ControlToken = "test-control-secret"
 	s.IsRoot = true
 	s.Enforcing = func() bool { return enforcing }
 	s.Enforce = func(on bool) error { enforcing = on; return nil }
@@ -92,6 +101,8 @@ func TestActionEndpoints(t *testing.T) {
 		} else {
 			r = httptest.NewRequest(method, path, strings.NewReader(body))
 		}
+		r.Host = "127.0.0.1:7777"
+		r.Header.Set("Authorization", "Bearer test-control-secret")
 		h.ServeHTTP(rec, r)
 		return rec
 	}
@@ -100,7 +111,7 @@ func TestActionEndpoints(t *testing.T) {
 	rec := call(http.MethodGet, "/api/status", "")
 	var st map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &st)
-	if st["root"] != true || st["enforcing"] != false {
+	if st["root"] != true || st["enforcing"] != false || st["control_authorized"] != true {
 		t.Fatalf("status = %v", st)
 	}
 
@@ -122,6 +133,73 @@ func TestActionEndpoints(t *testing.T) {
 	call(http.MethodPost, "/api/hostname", `{"name":"lab"}`)
 	if hostnamed != "lab" {
 		t.Errorf("hostname = %q", hostnamed)
+	}
+}
+
+func TestMutationsRequireTokenAndLocalOrigin(t *testing.T) {
+	s := testServer(t)
+	called := 0
+	s.Enforce = func(bool) error { called++; return nil }
+	s.ImportBlock = func(string) (int, error) { called++; return 1, nil }
+	s.SpoofMAC = func(string) (string, error) { called++; return "", nil }
+	s.SetHostname = func(string) error { called++; return nil }
+	h := s.Handler()
+	tests := []struct{ method, path, body string }{
+		{"POST", "/api/rules", `{"scope":"app","match":"test"}`},
+		{"DELETE", "/api/rules?id=none", ""},
+		{"POST", "/api/enforce", `{"on":true}`},
+		{"POST", "/api/blocklist", `{"src":"adult"}`},
+		{"POST", "/api/spoof-mac", `{"iface":"en0"}`},
+		{"POST", "/api/hostname", `{"name":"lab"}`},
+	}
+	for _, tt := range tests {
+		for _, bad := range []string{"", "Bearer wrong"} {
+			r := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			r.Host = "127.0.0.1:7777"
+			r.Header.Set("Authorization", bad)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s %s with %q: got %d", tt.method, tt.path, bad, w.Code)
+			}
+		}
+	}
+	if called != 0 || len(s.Rules.List()) != 0 {
+		t.Fatalf("unauthorized mutation: hooks=%d rules=%d", called, len(s.Rules.List()))
+	}
+	for _, change := range []func(*http.Request){
+		func(r *http.Request) { r.Host = "attacker.example:7777" },
+		func(r *http.Request) { r.Header.Set("Origin", "http://attacker.example") },
+	} {
+		r := authorized("POST", "/api/enforce", `{"on":true}`)
+		change(r)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden || called != 0 {
+			t.Fatalf("origin/host bypass: status=%d calls=%d", w.Code, called)
+		}
+	}
+	for _, method := range []string{"GET", "OPTIONS", "DELETE"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, authorized(method, "/api/enforce", ""))
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s /api/enforce: got %d", method, w.Code)
+		}
+	}
+	s.ControlToken = ""
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorized("POST", "/api/enforce", `{"on":true}`))
+	if w.Code != http.StatusForbidden || called != 0 {
+		t.Fatalf("empty token must disable controls: status=%d calls=%d", w.Code, called)
+	}
+}
+
+func TestReadOnlyResponsesDoNotAllowCrossOrigin(t *testing.T) {
+	s := testServer(t)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/api/snapshot", nil))
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("snapshot leaked cross-origin access")
 	}
 }
 
