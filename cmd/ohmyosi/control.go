@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // newControlToken writes a short-lived bearer secret in a root-only directory.
@@ -18,6 +19,10 @@ func newControlToken(dir string) (secret, path string, err error) {
 	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
 		return "", "", fmt.Errorf("control directory must be private to its owner: %s", dir)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return "", "", fmt.Errorf("control directory must belong to the daemon user: %s", dir)
 	}
 	var bytes [32]byte
 	if _, err = rand.Read(bytes[:]); err != nil {
