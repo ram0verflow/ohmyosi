@@ -401,6 +401,20 @@ go build -o /tmp/beacon-sim ./cmd/beacon-sim
 /tmp/beacon-sim -target <a-box-you-own>:4444 -every 10s -up 5MB -i-own-this-target
 ```
 
+**Testing destination identity.** `cmd/identity-eval` is the independent
+research harness. It compares DNS-only, flow-first, ambiguity-aware, and
+flow-only policies while keeping wrong labels separate from abstentions. Ground
+truth must come from a workload manifest or server/application log; fixtures
+that claim DNS, SNI, or HTTP as truth are rejected.
+
+```sh
+go run ./cmd/identity-eval -input research/fixtures/shared-ip.ndjson
+```
+
+The checked-in fixture reproduces shared-address contamination but is only a
+harness test, not a paper result. The frozen study design and threats to
+validity are in [`docs/RESEARCH_PROTOCOL.md`](docs/RESEARCH_PROTOCOL.md).
+
 ## Changing what you broadcast
 
 Before joining a network you do not trust, the two identifiers a machine hands

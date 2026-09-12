@@ -1,0 +1,10 @@
+# Ground truth comes from the controlled workload manifest, never DNS/SNI/HTTP.
+{"type":"dns","at":1,"ip":"203.0.113.10","name":"alpha.example","ttl":300}
+{"type":"dns","at":2,"ip":"203.0.113.10","name":"beta.example","ttl":300}
+{"type":"flow","at":3,"ip":"203.0.113.10","flow_id":"shared-alpha","truth":"alpha.example","truth_source":"workload_manifest","sni":"alpha.example"}
+{"type":"flow","at":4,"ip":"203.0.113.10","flow_id":"shared-beta","truth":"beta.example","truth_source":"workload_manifest","sni":"beta.example"}
+{"type":"flow","at":5,"ip":"203.0.113.10","flow_id":"shared-gamma-hidden","truth":"gamma.example","truth_source":"workload_manifest"}
+{"type":"dns","at":6,"ip":"198.51.100.20","name":"legacy.example","ttl":300}
+{"type":"flow","at":7,"ip":"198.51.100.20","flow_id":"pre-existing-with-dns","truth":"legacy.example","truth_source":"workload_manifest"}
+{"type":"flow","at":8,"ip":"192.0.2.30","flow_id":"clear-http","truth":"api.example","truth_source":"workload_manifest","http_host":"api.example"}
+{"type":"flow","at":9,"ip":"192.0.2.40","flow_id":"ech-no-dns","truth":"secret.example","truth_source":"workload_manifest"}
