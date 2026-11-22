@@ -28,11 +28,14 @@ import (
 	"time"
 
 	"ohmyosi/internal/api"
+	"ohmyosi/internal/audit"
 	"ohmyosi/internal/decode"
 	"ohmyosi/internal/enforce"
 	"ohmyosi/internal/enrich"
+	"ohmyosi/internal/eval"
 	"ohmyosi/internal/flow"
 	"ohmyosi/internal/history"
+	"ohmyosi/internal/naming"
 	"ohmyosi/internal/pktap"
 	"ohmyosi/internal/rules"
 	"ohmyosi/internal/score"
@@ -50,6 +53,14 @@ func main() {
 	filter := flag.String("filter", "", "BPF filter, e.g. \"not port 22\"")
 	addr := flag.String("addr", "127.0.0.1:7777", "listen address for the UI and event stream")
 	interval := flag.Duration("interval", time.Second, "how often to emit a tick")
+	evalFile := flag.String("eval", "", "measure a saved capture: coverage, and how often DNS correlation disagrees with the name each flow announced; prints a report and exits (no root)")
+	reportDir := flag.String("report", "", "measure every capture in a directory (e.g. dist/runs from tools/workload) and print per-run and per-condition tables; exits (no root)")
+	reportCSV := flag.String("report-csv", "", "with -report: also write one CSV row per run to this file")
+	evalSlack := flag.Duration("eval-slack", naming.DefaultSlack, "with -eval: how late a DNS answer may be timestamped after a flow opens and still count (report 0, 100ms and 500ms)")
+	truthFile := flag.String("truth", "", "with -eval: ground-truth file from cmd/acn-lab, to score each naming strategy against fact")
+	evalJSON := flag.Bool("eval-json", false, "with -eval: print the full report as JSON")
+	evalBlock := flag.String("eval-block", "", "with -eval: comma-separated domains to treat as blocked, to count evasions")
+	evalPrior := flag.String("eval-prior", "", "with -eval: an earlier capture whose DNS answers are preloaded, as a monitor running across both would hold them (-report does this for warm passes)")
 	snaplen := flag.Int("snaplen", 1600, "bytes captured per packet; needs to cover a TLS ClientHello for SNI, drop to 128 for headers only")
 	noRDNS := flag.Bool("no-rdns", false, "disable reverse DNS (the only thing here that sends packets)")
 	noIcons := flag.Bool("no-icons", false, "skip application icon extraction")
@@ -73,6 +84,12 @@ func main() {
 	spoofMAC := flag.String("spoof-mac", "", "assign a random locally-administered MAC to this interface, then exit (root)")
 	setHostname := flag.String("set-hostname", "", "set the machine hostname (all three macOS names), then exit (root)")
 	flag.Parse()
+	if *reportDir != "" {
+		os.Exit(doReport(*reportDir, *reportCSV, *evalJSON, *evalSlack))
+	}
+	if *evalFile != "" {
+		os.Exit(doEval(*evalFile, *truthFile, *evalBlock, *evalPrior, *evalJSON, *evalSlack))
+	}
 
 	if *rulesFile == "" {
 		// Rules live in a persistent, system-wide location, not the temp cache:
@@ -185,6 +202,11 @@ func main() {
 	}
 	names := enrich.NewNames(!*noRDNS)
 	names.Run(ctx, 4)
+	// The ledger keeps every name->address fact with its time and asker, so each
+	// flow's handshake name can be compared with what DNS correlation would have
+	// guessed. The loop remembers blocked names that escaped anyway.
+	ledger := naming.NewLedger()
+	evasions := audit.NewLoop()
 
 	// Published allocation lists. Absent is fine - it just means more addresses
 	// stay unidentified - but say so rather than degrading quietly.
@@ -299,12 +321,31 @@ func main() {
 		env := api.Envelope{Type: typ, T: float64(time.Now().UnixNano()) / 1e9, Gone: gone}
 		env.Flows = make([]api.FlowView, 0, len(fs))
 		needed := make(map[int32]bool, len(fs))
+		blockedDomains := ruleset.BlockedDomains()
 		for _, f := range fs {
-			e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, inv)
+			e := api.InvestigateHS(f.Remote.Addr(), f.Remote.Port(), f.SNI, f.SNISrc, inv)
 			fc := hist.FirstContact(histKey(f.DisplayComm(), e))
 			v := rate(f, e, procs, beacons, fc)
 			dec := ruleset.Decide(targetOf(f, e, procs))
-			env.Flows = append(env.Flows, api.View(f, e, v, fc, dec, enf.isOn() && dec.Blocked()))
+			fv := api.View(f, e, v, fc, dec, enf.isOn() && dec.Blocked())
+			nv := gradeFlow(ledger, f)
+			if !f.Self && !localDestination(f.Remote.Addr()) {
+				fv.Naming = &nv
+				if ev, ok := audit.Check(f.ID, f.DisplayComm(), f.DisplayPID(), f.Remote.Addr(),
+					f.PktsDown > 0, nv, blockedDomains); ok && evasions.Observe(ev) {
+					env.Alerts = append(env.Alerts, api.Alert{
+						Kind: "evasion", FlowID: f.ID, Comm: f.DisplayComm(), Dest: ev.Name,
+						Score: v.Score, Band: "evasion",
+						Reasons: []string{
+							fmt.Sprintf("%s is blocked (rule %s) but %s announced it in a handshake and %s answered", ev.Name, ev.Rule, f.DisplayComm(), ev.Addr),
+							ev.Route,
+						},
+						T: float64(time.Now().UnixNano()) / 1e9,
+					})
+					logf("EVASION %s -> %s (%s) at %s: %s", f.DisplayComm(), ev.Name, ev.Rule, ev.Addr, ev.Route)
+				}
+			}
+			env.Flows = append(env.Flows, fv)
 			if pid := f.DisplayPID(); pid > 0 {
 				needed[pid] = true
 			}
@@ -322,7 +363,7 @@ func main() {
 					dest = e.IP
 				}
 				env.Alerts = append(env.Alerts, api.Alert{
-					FlowID: f.ID, Comm: f.DisplayComm(), Dest: dest,
+					Kind: "loud", FlowID: f.ID, Comm: f.DisplayComm(), Dest: dest,
 					Score: v.Score, Band: v.Band, Reasons: signalReasons(v),
 					T: float64(time.Now().UnixNano()) / 1e9,
 				})
@@ -348,15 +389,19 @@ func main() {
 		// Coverage across every live flow, so the number does not swing with
 		// whatever happened to change in this tick.
 		st.Prefixes = ranges.Len()
+		tally := naming.NewTally()
 		for _, f := range table.All() {
 			if f.Self {
 				continue
+			}
+			if !localDestination(f.Remote.Addr()) {
+				tally.Add(gradeFlow(ledger, f))
 			}
 			st.LiveFlows++
 			if f.DisplayPID() > 0 {
 				st.WithProcess++
 			}
-			e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, inv)
+			e := api.InvestigateHS(f.Remote.Addr(), f.Remote.Port(), f.SNI, f.SNISrc, inv)
 			fc := hist.FirstContact(histKey(f.DisplayComm(), e))
 			switch rate(f, e, procs, beacons, fc).Band {
 			case "notable":
@@ -375,10 +420,15 @@ func main() {
 			if e.Host == "" && e.Org == "" {
 				st.Unidentified++
 			}
-			if e.HostSrc != "sni" && e.HostSrc != "dns" && e.HostSrc != "http" {
+			if api.IsDirectIP(e.HostSrc, f.PreExisting) && !localDestination(f.Remote.Addr()) {
 				st.DirectIP++
 			}
 		}
+		st.Naming = tally.ByClass
+		st.Disagreement = tally.Disagreement()
+		st.CorrelationError = tally.CorrelationError()
+		st.CrossProcess = tally.CrossProcess
+		st.Evasions = evasions.Total()
 		env.Stats = st
 		return env
 	}
@@ -439,11 +489,22 @@ func main() {
 				undecoded.Add(1)
 				continue
 			}
+			asker, askerComm := o.PID, o.Comm
+			if o.EPID > 0 {
+				asker, askerComm = o.EPID, o.EComm
+			}
 			for _, r := range o.DNS {
 				names.Learn(r.IP, r.Name, enrich.SrcDNS)
+				ledger.DNS(r.IP, r.Name, o.Ts, r.TTL, asker, askerComm)
 			}
 			if o.SNI != "" {
-				names.Learn(o.Dst, o.SNI, enrich.SrcSNI)
+				// Into the shared cache only as a *peer* fact: another flow to
+				// this address may borrow it, but labelled as borrowed. The flow
+				// that sent it keeps its own copy as sni/quic.
+				names.Learn(o.Dst, o.SNI, enrich.SrcPeer)
+				if !o.ECH { // an ECH outer name is a front, not this address's name
+					ledger.Handshake(o.Dst, o.SNI, o.Ts, asker)
+				}
 			}
 			if o.HTTPHost != "" {
 				names.Learn(o.Dst, o.HTTPHost, enrich.SrcHTTP)
@@ -573,7 +634,7 @@ func main() {
 				if f.Self {
 					continue
 				}
-				e := api.Investigate(f.Remote.Addr(), f.Remote.Port(), f.SNI, inv)
+				e := api.InvestigateHS(f.Remote.Addr(), f.Remote.Port(), f.SNI, f.SNISrc, inv)
 				if ruleset.Decide(targetOf(f, e, procs)).Blocked() {
 					conns = append(conns, enforce.Conn{
 						Proto:   string(f.Proto),
@@ -582,7 +643,18 @@ func main() {
 					})
 				}
 			}
-			enf.sync(ruleset, conns)
+			enf.sync(ruleset, conns, verifiedDests(evasions))
+			for _, p := range enf.audit(ruleset) {
+				logf("TAMPER %s: %s", p.Layer, p.Detail)
+				tamper := api.Envelope{Type: "tick", T: float64(time.Now().UnixNano()) / 1e9,
+					Alerts: []api.Alert{{Kind: "tamper", Comm: "ohmyosi", Dest: p.Layer, Band: "tamper",
+						Reasons: []string{p.Detail}, T: float64(time.Now().UnixNano()) / 1e9}}}
+				if *jsonOut {
+					enc.Encode(tamper)
+				} else {
+					srv.Broadcast(tamper)
+				}
+			}
 		}
 
 		if len(changed) == 0 && len(gone) == 0 {
@@ -630,7 +702,8 @@ func rate(f flow.Flow, e api.Endpoint, procs *enrich.Procs, beacons *score.Track
 		age = e.AgeDays
 	}
 	return score.Evaluate(score.Input{
-		DirectIP:         e.HostSrc != "sni" && e.HostSrc != "dns",
+		DirectIP:         api.IsDirectIP(e.HostSrc, f.PreExisting),
+		HandshakeUnseen:  f.PreExisting,
 		HasName:          e.Host != "",
 		HasOrg:           e.Org != "",
 		RemotePort:       f.Remote.Port(),
@@ -902,4 +975,74 @@ func doPlayback(ctx context.Context, path, addr string, speed float64, jsonOut b
 
 func logf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "%s ohmyosi: %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, a...))
+}
+
+// doEval runs the measurement over a capture file and prints it.
+func doEval(path, truthPath, block, prior string, asJSON bool, slack time.Duration) int {
+	var truth eval.Truth
+	if truthPath != "" {
+		t, err := eval.LoadTruth(truthPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ohmyosi: truth: %v\n", err)
+			return 1
+		}
+		truth = t
+	}
+	var blocked []string
+	for _, d := range strings.Split(block, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			blocked = append(blocked, d)
+		}
+	}
+	rep, err := eval.Run(path, eval.Options{Truth: truth, Blocked: blocked, Slack: slack, Prior: prior})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ohmyosi: eval: %v\n", err)
+		return 1
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(rep)
+		return 0
+	}
+	rep.Print(os.Stdout)
+	return 0
+}
+
+// gradeFlow grades a live flow the way -eval does, against last-answer
+// correlation, with its ECH and ALPN evidence.
+func gradeFlow(l *naming.Ledger, f flow.Flow) naming.Verdict {
+	ev := naming.Evidence{Handshake: f.SNI, ECH: f.ECH, ECHOffered: f.ECHOffered, ALPN: f.ALPN, Unseen: f.PreExisting,
+		PID: f.DisplayPID(), Opened: f.FirstSeen, LastSeen: f.LastSeen}
+	return naming.Grade(ev, l.Correlate(f.Remote.Addr(), f.FirstSeen), l, f.Remote.Addr())
+}
+
+// doReport measures a directory of workload captures.
+func doReport(dir, csvPath string, asJSON bool, slack time.Duration) int {
+	runs, err := eval.Summarize(dir, slack, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ohmyosi: report: %v\n", err)
+		return 1
+	}
+	if csvPath != "" {
+		f, err := os.Create(csvPath)
+		if err == nil {
+			err = eval.WriteCSV(f, runs)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ohmyosi: csv: %v\n", err)
+			return 1
+		}
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(runs)
+		return 0
+	}
+	eval.PrintSummary(os.Stdout, runs)
+	return 0
 }

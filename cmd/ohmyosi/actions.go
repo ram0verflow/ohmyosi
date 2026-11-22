@@ -8,11 +8,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"ohmyosi/internal/api"
+	"ohmyosi/internal/audit"
 	"ohmyosi/internal/enforce"
 	"ohmyosi/internal/rules"
 )
@@ -26,6 +28,11 @@ type enforcement struct {
 	on      bool
 	lastVer int
 	lastSig string
+	// lastAudit throttles the self-audit; lastProblems dedups its reports so a
+	// tampered state is announced once, not every few seconds.
+	lastAudit    time.Time
+	lastProblems string
+	hasPF        bool
 }
 
 func newEnforcement(on bool) *enforcement {
@@ -68,7 +75,7 @@ func (en *enforcement) set(on bool) {
 
 // sync pushes the current rules to the system. Cheap when nothing changed: both
 // halves skip the work unless the rules or the blocked-connection set moved.
-func (en *enforcement) sync(ruleset *rules.Set, conns []enforce.Conn) {
+func (en *enforcement) sync(ruleset *rules.Set, conns []enforce.Conn, dests []enforce.Dest) {
 	en.mu.Lock()
 	defer en.mu.Unlock()
 	if !en.on {
@@ -80,12 +87,56 @@ func (en *enforcement) sync(ruleset *rules.Set, conns []enforce.Conn) {
 			logf("hosts sync: %v", err)
 		}
 	}
-	if sig := connsSig(conns); sig != en.lastSig {
+	sig := connsSig(conns)
+	for _, d := range dests {
+		sig += "|v" + d.IP
+	}
+	if sig != en.lastSig {
 		en.lastSig = sig
-		if _, err := en.e.SyncPF(conns, nil); err != nil {
+		en.hasPF = len(conns)+len(dests) > 0
+		if _, err := en.e.SyncPF(conns, dests); err != nil {
 			logf("pf sync: %v", err)
 		}
 	}
+}
+
+// verifiedDests turns the addresses evasions proved into pf blocks. Addresses
+// shared with unrelated names are left out: dropping a CDN edge would take
+// every site behind it down too. Those evasions are still reported.
+func verifiedDests(l *audit.Loop) []enforce.Dest {
+	var out []enforce.Dest
+	for _, a := range l.Verified(false) {
+		out = append(out, enforce.Dest{Proto: "tcp", IP: a.String()}, enforce.Dest{Proto: "udp", IP: a.String()})
+	}
+	return out
+}
+
+// audit checks, at most every ten seconds, that what enforcement applied is
+// still in place. The reader auditing the enforcer: if something edits the
+// hosts file or disables pf behind our back, say so instead of assuming.
+func (en *enforcement) audit(ruleset *rules.Set) []audit.Problem {
+	en.mu.Lock()
+	defer en.mu.Unlock()
+	if !en.on || time.Since(en.lastAudit) < 10*time.Second {
+		return nil
+	}
+	en.lastAudit = time.Now()
+	want := ruleset.BlockedDomains()
+	var probs []audit.Problem
+	if b, err := os.ReadFile(en.e.HostsPath); err == nil {
+		probs = append(probs, audit.AuditHosts(string(b), want)...)
+	}
+	info, _ := exec.Command("pfctl", "-s", "info").CombinedOutput()
+	anchor, _ := exec.Command("pfctl", "-a", en.e.Anchor, "-s", "rules").CombinedOutput()
+	if en.hasPF {
+		probs = append(probs, audit.AuditPF(string(info), string(anchor), true)...)
+	}
+	sig := fmt.Sprint(probs)
+	if sig == en.lastProblems {
+		return nil
+	}
+	en.lastProblems = sig
+	return probs
 }
 
 func (en *enforcement) restore() {
