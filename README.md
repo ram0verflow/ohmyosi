@@ -51,6 +51,13 @@ Root is required: `pktap` is privileged.
 -enforce          apply block rules via pf and /etc/hosts (root; off by default)
 -import-blocklist SRC   import a hosts-format blocklist (file or http(s) URL) as
                         domain block rules, then exit
+-eval FILE        measure a capture: read vs DNS-correlated names, per app; exits (no root)
+-truth FILE       with -eval: lab ground truth, scores each naming strategy against fact
+-eval-block a,b   with -eval: treat these domains as blocked and report evasions
+-eval-json        with -eval: full report as JSON
+-eval-slack D     with -eval/-report: DNS-to-flow ordering slack (default 100ms)
+-report DIR       measure every capture in DIR (workload runs), pooled by condition
+-report-csv F     with -report: one CSV row per run
 -spoof-mac IFACE  assign a random locally-administered MAC to IFACE, then exit (root)
 -set-hostname N   set the machine's hostname (all three macOS names), then exit (root)
 ```
@@ -261,6 +268,32 @@ the machine is actually asking about.
 The same idea applies wherever one connection stands in for many. A browser is
 already handled by having one flow per site.
 
+## Read versus inferred
+
+Every other host monitor names a connection by correlating its address with a
+DNS answer it saw earlier. ohmyosi has the name the connection announced for
+itself, so it can grade that guess on every flow: `naming.class` is one of
+`agree`, `alias`, `same-site`, `mismatch` (correlation shows another name),
+`handshake-only` (correlation shows a bare address - DoH, cached, hardcoded),
+`dns-only`, `unseen` (opened before capture) or `neither`. `cross_process` marks
+a correlated name that came from *another app's* lookup, which only pktap's
+effective-process field can reveal.
+
+A name another flow announced for the same address is shown with source `peer`,
+never `sni`: it is a guess, and is labelled as one.
+
+```sh
+make lab                       # ground-truth experiment, no root
+sudo make field                # capture this machine, then measure it
+./ohmyosi -eval capture.pcapng # any pktap capture
+```
+
+When a domain-blocked name appears in a handshake that gets an answer, the
+daemon raises an `evasion` alert naming the app and the address it really
+reached, and (with `-enforce`) adds that address to the pf anchor unless it is
+shared with unrelated names. It also audits its own enforcement and raises
+`tamper` if the hosts region or pf anchor disappears. See `docs/ACN.md`.
+
 ## Suspicion, honestly
 
 Every flow carries a score, a band (`quiet` / `notable` / `unusual` / `loud`)
@@ -452,6 +485,11 @@ internal/api/      event schema, SSE server, debug page
 docs/SCHEMA.md     the wire contract
 docs/UI_SPEC.md    spec for the canvas UI
 docs/IDENTITY.md   plan for naming the far end (ASN, RDAP, clustering)
+docs/ACN.md        the measurement study: read vs inferred naming, lab, pitch
+internal/naming/   read-vs-correlated classifier and ledger
+internal/audit/    block-evasion detection and enforcement self-audit
+internal/eval/     offline measurement over a capture
+internal/lab/      ground-truth capture builder
 ```
 
 ## Tests
