@@ -4,9 +4,9 @@ package decode
 //
 // Scope and limits, because both matter for how much you trust the output:
 //
-//   - Only the first TCP segment of a connection is examined. A ClientHello
-//     split across segments is missed. Rare in practice; reassembly is a much
-//     bigger machine than it is worth here.
+//   - This reads one TLS record. A ClientHello split across TCP segments -
+//     the norm since post-quantum key shares - is reassembled by Decoder
+//     (hello.go) before it gets here.
 //   - Encrypted Client Hello encrypts this field. As ECH rolls out in Chrome
 //     and Firefox this returns "" more and more often, and the fallback is
 //     reverse DNS plus ASN.

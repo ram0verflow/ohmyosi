@@ -22,8 +22,9 @@ import (
 // AES-128-GCM, walk the CRYPTO frames, and read the SNI out of the ClientHello.
 //
 // Limits worth knowing: only the client's first flight is readable this way,
-// only QUIC v1 and v2 are handled, and a ClientHello split across several
-// Initial packets is only recovered if the first one carries the extension.
+// and only QUIC v1 and v2 are handled. A ClientHello split across several
+// Initial packets is reassembled by Decoder (hello.go); QUICHello on its own
+// sees one packet.
 
 var (
 	// RFC 9001 §5.2 - QUIC v1.
@@ -52,15 +53,33 @@ func QUICSNI(p []byte) string {
 // QUICInfo returns both the server name and the JA4 client fingerprint from a
 // QUIC Initial. The ClientHello is decrypted once and read for both.
 func QUICInfo(p []byte) (sni, ja4 string) {
+	sni, ja4, _ = QUICHello(p)
+	return sni, ja4
+}
+
+// QUICHello is QUICInfo plus whether the ClientHello offers Encrypted Client
+// Hello - in which case the SNI read here is the public outer name, not the
+// site the client is actually visiting.
+func QUICHello(p []byte) (sni, ja4 string, ech bool) {
 	plain := quicDecryptInitial(p)
 	if plain == nil {
-		return "", ""
+		return "", "", false
 	}
-	hs := cryptoHandshake(plain)
+	frames := cryptoFrames(plain)
+	m := make(map[uint64][]byte, len(frames))
+	for _, f := range frames {
+		m[f.off] = f.data
+	}
+	// CRYPTO frames may arrive out of order within one packet (Chrome shuffles
+	// them); fall back to the offset-zero frame when the hello is incomplete.
+	hs := assembleCrypto(m)
 	if hs == nil {
-		return "", ""
+		hs = cryptoHandshake(plain)
 	}
-	return parseSNIHandshake(hs), ja4FromHandshake(hs, 'q')
+	if hs == nil {
+		return "", "", false
+	}
+	return parseSNIHandshake(hs), ja4FromHandshake(hs, 'q'), helloHasExt(hs, extECH)
 }
 
 // quicDecryptInitial undoes header protection, derives the initial secrets and

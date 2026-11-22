@@ -61,16 +61,27 @@ type Obs struct {
 	// JA4 is the TLS client fingerprint from a ClientHello: it identifies the
 	// software making the call, and unlike the SNI it survives Encrypted Client
 	// Hello. Set on the same packets that carry an SNI.
-	JA4      string
-	HTTPHost string      // cleartext HTTP Host header, when present
-	DNS      []DNSRecord // non-empty when this packet was a DNS response we could read
+	JA4 string
+	// QUICLong is set on a UDP packet that starts with a QUIC long header -
+	// the shape every QUIC connection opens with. A UDP/443 flow whose first
+	// packet is a short header was already running before capture began.
+	QUICLong bool
+	// ECH: the ClientHello carries the ECH extension AND its SNI is a known
+	// ECH public name (ECHFronts), so SNI is a front, not the site visited.
+	ECH bool
+	// ECHOffered: the ECH extension is present but the SNI is not a known front
+	// - usually GREASE (Chrome, Firefox). The SNI is the real destination.
+	ECHOffered bool
+	HTTPHost   string      // cleartext HTTP Host header, when present
+	DNS        []DNSRecord // non-empty when this packet was a DNS response we could read
 	// Questions are the names asked for in a DNS message. A resolver's own
 	// flows are meaningless without them - "mDNSResponder to 1.1.1.1" says
 	// nothing, while the list of names it is resolving says everything.
 	Questions []string
 }
 
-// Decoder is stateful only in its reusable layer structs; use one per goroutine.
+// Decoder holds reusable layer structs and the ClientHellos still being
+// reassembled (hello.go); use one per packet stream, one per goroutine.
 //
 // gopacket's DecodingLayerParser fixes its entry layer at construction, but a
 // pktap capture mixes Ethernet (en0), loopback/AF headers (lo0, utun) and bare
@@ -90,10 +101,12 @@ type Decoder struct {
 	dns     layers.DNS
 	payload gopacket.Payload
 	decoded []gopacket.LayerType
+
+	pending map[helloKey]*pendingHello
 }
 
 func New() *Decoder {
-	d := &Decoder{decoded: make([]gopacket.LayerType, 0, 8)}
+	d := &Decoder{decoded: make([]gopacket.LayerType, 0, 8), pending: map[helloKey]*pendingHello{}}
 	// Reusing these structs instead of allocating per packet is the difference
 	// between idle and an audible fan at a few thousand packets a second.
 	shared := []gopacket.DecodingLayer{
@@ -153,24 +166,31 @@ func (d *Decoder) Decode(p *pktap.Packet) *Obs {
 		Iface: p.Ifname, Dir: p.Dir, WireLen: p.WireLen, Proto: Other,
 	}
 	var haveIP bool
+	ipPayload := 0 // bytes after the IP header on the wire, from the IP length field
 	for _, lt := range d.decoded {
 		switch lt {
 		case layers.LayerTypeIPv4:
 			o.Src, _ = netip.AddrFromSlice(d.ip4.SrcIP)
 			o.Dst, _ = netip.AddrFromSlice(d.ip4.DstIP)
 			o.Src, o.Dst = o.Src.Unmap(), o.Dst.Unmap()
+			ipPayload = int(d.ip4.Length) - int(d.ip4.IHL)*4
 			haveIP = true
 		case layers.LayerTypeIPv6:
 			o.Src, _ = netip.AddrFromSlice(d.ip6.SrcIP)
 			o.Dst, _ = netip.AddrFromSlice(d.ip6.DstIP)
+			ipPayload = int(d.ip6.Length)
 			haveIP = true
 		case layers.LayerTypeTCP:
 			o.Proto = TCP
 			o.SPort, o.DPort = uint16(d.tcp.SrcPort), uint16(d.tcp.DstPort)
 			o.SYN, o.FIN, o.RST = d.tcp.SYN, d.tcp.FIN, d.tcp.RST
 			o.PayloadLen = len(d.tcp.Payload)
-			o.SNI = parseSNI(d.tcp.Payload)
-			o.JA4 = JA4(d.tcp.Payload)
+			// The segment's length on the wire, which snaplen may have cut the
+			// captured payload short of (pktap's header counts against it).
+			wire := ipPayload - int(d.tcp.DataOffset)*4
+			var ech bool
+			o.SNI, o.JA4, ech = d.tcpHello(helloKey{TCP, o.Src, o.Dst, o.SPort, o.DPort}, d.tcp.Seq, d.tcp.Payload, wire)
+			o.ECH, o.ECHOffered = classifyECH(o.SNI, ech)
 			if o.SNI == "" {
 				o.HTTPHost = parseHTTPHost(d.tcp.Payload)
 			}
@@ -182,7 +202,10 @@ func (d *Decoder) Decode(p *pktap.Packet) *Obs {
 			// browser traffic to Google and Cloudflare lives, and without it
 			// every one of those flows is a bare address. The same ClientHello
 			// yields the JA4 fingerprint of whatever is speaking QUIC.
-			o.SNI, o.JA4 = QUICInfo(d.udp.Payload)
+			var ech bool
+			o.SNI, o.JA4, ech = d.quicHello(helloKey{UDP, o.Src, o.Dst, o.SPort, o.DPort}, d.udp.Payload)
+			o.ECH, o.ECHOffered = classifyECH(o.SNI, ech)
+			o.QUICLong = len(d.udp.Payload) > 0 && d.udp.Payload[0]&0xc0 == 0xc0
 		case layers.LayerTypeDNS:
 			o.DNS = collectDNS(&d.dns)
 			for _, q := range d.dns.Questions {

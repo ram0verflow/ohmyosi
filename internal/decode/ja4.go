@@ -294,3 +294,69 @@ func firstALPN(ext []byte) string {
 	proto := ext[3 : 3+l]
 	return string([]byte{proto[0], proto[len(proto)-1]})
 }
+
+// extECH is the encrypted_client_hello extension (RFC 9849 / draft-ietf-tls-esni).
+const extECH = 0xfe0d
+
+// helloHasExt reports whether a bare ClientHello handshake offers extension
+// want. Same bounds discipline as ja4FromHandshake: hostile bytes give false.
+func helloHasExt(body []byte, want uint16) bool {
+	if len(body) < 4 || body[0] != 0x01 {
+		return false
+	}
+	ch := body[4:]
+	if n := int(body[1])<<16 | int(body[2])<<8 | int(body[3]); n < len(ch) {
+		ch = ch[:n]
+	}
+	p := 34
+	if len(ch) < p+1 {
+		return false
+	}
+	p += 1 + int(ch[p])
+	if len(ch) < p+2 {
+		return false
+	}
+	p += 2 + (int(ch[p])<<8 | int(ch[p+1]))
+	if len(ch) < p+1 {
+		return false
+	}
+	p += 1 + int(ch[p])
+	if len(ch) < p+2 {
+		return false
+	}
+	end := p + 2 + (int(ch[p])<<8 | int(ch[p+1]))
+	p += 2
+	if end > len(ch) {
+		end = len(ch)
+	}
+	for p+4 <= end {
+		et := uint16(ch[p])<<8 | uint16(ch[p+1])
+		el := int(ch[p+2])<<8 | int(ch[p+3])
+		if et == want {
+			return true
+		}
+		p += 4 + el
+	}
+	return false
+}
+
+// HelloECH reports whether a TLS record carries a ClientHello offering ECH.
+func HelloECH(payload []byte) bool {
+	if len(payload) < 5 || payload[0] != 0x16 {
+		return false
+	}
+	return helloHasExt(payload[5:], extECH)
+}
+
+// ALPNOf returns the two-character ALPN code JA4 records ("h2", "h3", "h1"),
+// or "" - read back out of the fingerprint's a-part rather than parsed twice.
+func ALPNOf(ja4 string) string {
+	if len(ja4) < 10 || ja4[9] == '_' {
+		return ""
+	}
+	a := ja4[8:10]
+	if a == "00" {
+		return ""
+	}
+	return a
+}
