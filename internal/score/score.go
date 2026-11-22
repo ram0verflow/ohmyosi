@@ -38,13 +38,16 @@ type Result struct {
 
 // Input is everything the scorer looks at. All of it comes from observation.
 type Input struct {
-	DirectIP   bool // no SNI, and no DNS answer we witnessed for this address
-	HasName    bool // a hostname from any source
-	HasOrg     bool // an owner from the published allocation table
-	RemotePort uint16
-	Proto      string
-	ExecPath   string // full path of the process binary
-	IsSelf     bool
+	DirectIP bool // no SNI, and no DNS answer we witnessed for this address
+	// HandshakeUnseen: the flow opened before capture began, so the absence of
+	// a name says nothing about the software. The anonymity signals are waived.
+	HandshakeUnseen bool
+	HasName         bool // a hostname from any source
+	HasOrg          bool // an owner from the published allocation table
+	RemotePort      uint16
+	Proto           string
+	ExecPath        string // full path of the process binary
+	IsSelf          bool
 
 	// RemoteIsLocal marks a destination on the machine's own network: a
 	// private range, a unique-local or link-local address, multicast, or
@@ -149,7 +152,10 @@ func Evaluate(in Input) Result {
 	if in.DirectIP && !trusted && !in.RemoteIsLocal {
 		add(25, "no name was announced for this address - no TLS SNI and no DNS answer we saw")
 	}
-	if !in.HasName && !in.HasOrg && !trusted && !in.RemoteIsLocal {
+	if in.HandshakeUnseen && !in.HasName && !in.RemoteIsLocal {
+		add(0, "this connection was already open when capture started, so its handshake - where the name would be - was never visible; not counted against it")
+	}
+	if !in.HasName && !in.HasOrg && !trusted && !in.RemoteIsLocal && !in.HandshakeUnseen {
 		add(15, "nothing identifies the far end: no hostname, and no published allocation covers this address")
 	}
 	// Waived, not hidden. The row still says what happened and why it was not

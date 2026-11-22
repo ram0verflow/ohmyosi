@@ -85,6 +85,10 @@ func (s *Store) FirstContact(key string) bool {
 		s.seen[key] = time.Now().Unix()
 		s.dirty = true
 	}
+	// No baseline yet: nothing can be "new" against an empty history.
+	if len(s.known) == 0 {
+		return false
+	}
 	return !wasKnown
 }
 

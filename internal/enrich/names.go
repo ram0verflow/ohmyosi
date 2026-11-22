@@ -21,19 +21,33 @@ type Source string
 
 const (
 	SrcSNI  Source = "sni"  // read off the TLS handshake: exactly what the client asked for
+	SrcQUIC Source = "quic" // the same, decrypted out of a QUIC Initial packet
 	SrcDNS  Source = "dns"  // sniffed from a DNS response: what the app looked up
 	SrcHTTP Source = "http" // cleartext HTTP Host header
+	// SrcPeer is a name some OTHER flow announced in its handshake to the same
+	// address. A true name->address fact, but not this flow's: one CDN address
+	// serves hundreds of names, so it is a guess and is labelled as one.
+	SrcPeer Source = "peer"
 	SrcRDNS Source = "rdns" // PTR record: often a hosting provider, not the site
 )
+
+// Stated reports whether a source is something the machine itself said about
+// this destination - a handshake, a lookup, a Host header - as opposed to a
+// guess made afterwards.
+func (s Source) Stated() bool {
+	return s == SrcSNI || s == SrcQUIC || s == SrcDNS || s == SrcHTTP
+}
 
 // Rank orders sources by how much the name tells you about intent.
 func (s Source) Rank() int {
 	switch s {
-	case SrcSNI:
-		return 4
+	case SrcSNI, SrcQUIC:
+		return 5
 	case SrcDNS:
-		return 3
+		return 4
 	case SrcHTTP:
+		return 3
+	case SrcPeer:
 		return 2
 	case SrcRDNS:
 		return 1

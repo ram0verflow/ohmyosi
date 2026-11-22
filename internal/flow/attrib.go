@@ -13,9 +13,16 @@ func IsSystemResolver(comm string) bool {
 	return strings.HasPrefix(comm, "mDNSResponder")
 }
 
+// useEffective: show the effective process when the socket owner is a resolver
+// acting for someone else, or when pktap gave no owner at all (it stamps some
+// Chrome connections "proc 0" with Chrome only as the effective process).
+func (f Flow) useEffective() bool {
+	return f.EPID > 0 && (f.PID <= 0 || IsSystemResolver(f.Comm))
+}
+
 // DisplayPID returns the process the UI should show for this flow.
 func (f Flow) DisplayPID() int32 {
-	if f.EPID > 0 && IsSystemResolver(f.Comm) {
+	if f.useEffective() {
 		return f.EPID
 	}
 	return f.PID
@@ -23,7 +30,7 @@ func (f Flow) DisplayPID() int32 {
 
 // DisplayComm returns the comm matching DisplayPID.
 func (f Flow) DisplayComm() string {
-	if f.EPID > 0 && IsSystemResolver(f.Comm) && f.EComm != "" {
+	if f.useEffective() && f.EComm != "" {
 		return f.EComm
 	}
 	return f.Comm

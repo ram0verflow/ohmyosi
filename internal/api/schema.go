@@ -9,6 +9,7 @@ package api
 import (
 	"ohmyosi/internal/enrich"
 	"ohmyosi/internal/flow"
+	"ohmyosi/internal/naming"
 	"ohmyosi/internal/rules"
 	"ohmyosi/internal/score"
 )
@@ -49,6 +50,10 @@ type Envelope struct {
 // enough to show a banner without a lookup, and the same reasons the score
 // already exposes, because an alert with no argument is one you cannot trust.
 type Alert struct {
+	// Kind is "loud" (a flow crossed into the loud band), "evasion" (a blocked
+	// name appeared in a handshake that got a reply) or "tamper" (enforcement
+	// was turned off or edited by something other than ohmyosi).
+	Kind    string   `json:"kind,omitempty"`
 	FlowID  string   `json:"flow_id"`
 	Comm    string   `json:"comm"`
 	Dest    string   `json:"dest"`
@@ -135,6 +140,13 @@ type FlowView struct {
 	// hardcoded address looks exactly like this, which is why it is surfaced
 	// rather than left as an unexplained blank.
 	DirectIP bool `json:"direct_ip,omitempty"`
+	// HandshakeUnseen means the flow opened before capture started, so there
+	// was never a handshake to read. Missing names here are a gap in our view,
+	// not something the software did, and are not scored as if they were.
+	HandshakeUnseen bool `json:"handshake_unseen,omitempty"`
+	// Naming compares the name read off this flow's handshake with the name a
+	// DNS-correlating monitor would have shown for it. See internal/naming.
+	Naming *naming.Verdict `json:"naming,omitempty"`
 	// Queries are names resolved over this flow. Present on a resolver's
 	// connections, where the destination itself is only an intermediary and
 	// these are the endpoints the machine actually wanted.
@@ -190,6 +202,26 @@ type Stats struct {
 	Notable int `json:"notable"`
 	Unusual int `json:"unusual"`
 	Loud    int `json:"loud"`
+
+	// Naming is read-versus-inferred over every live flow: how often the name
+	// a DNS-correlating monitor would show differs from the one the client
+	// asked for. Disagreement is over flows where both exist; CorrelationError
+	// also counts flows correlation could not name although the name was
+	// readable. Both are fractions, 0..1.
+	Naming           map[naming.Class]int `json:"naming,omitempty"`
+	Disagreement     float64              `json:"disagreement"`
+	CorrelationError float64              `json:"correlation_error"`
+	CrossProcess     int                  `json:"cross_process"`
+	// Evasions counts blocked names that turned up in a handshake anyway.
+	Evasions int `json:"evasions"`
+}
+
+// IsDirectIP is the single definition of "the machine never said where it was
+// going": no name from a source the machine itself stated, on a flow whose
+// opening we actually witnessed. A flow that predates the capture is not
+// direct-IP - we simply were not there for the part where it would have said.
+func IsDirectIP(hostSrc string, unseen bool) bool {
+	return !enrich.Source(hostSrc).Stated() && !unseen
 }
 
 // View renders a flow for the wire. The remote endpoint is assembled by the
@@ -200,11 +232,12 @@ func View(f flow.Flow, remote Endpoint, verdict score.Result, firstContact bool,
 	hostSrc := remote.HostSrc
 	v := FlowView{
 		ID: f.ID, Proto: string(f.Proto), PID: f.DisplayPID(), Comm: f.DisplayComm(), Iface: f.Iface,
-		Local:       Endpoint{IP: f.Local.Addr().String(), Port: f.Local.Port()},
-		Remote:      remote,
-		PreExisting: f.PreExisting,
-		DirectIP:    hostSrc != "sni" && hostSrc != "dns" && hostSrc != "http",
-		BytesUp:     f.BytesUp, BytesDown: f.BytesDown,
+		Local:           Endpoint{IP: f.Local.Addr().String(), Port: f.Local.Port()},
+		Remote:          remote,
+		PreExisting:     f.PreExisting,
+		HandshakeUnseen: f.PreExisting,
+		DirectIP:        IsDirectIP(hostSrc, f.PreExisting),
+		BytesUp:         f.BytesUp, BytesDown: f.BytesDown,
 		PktsUp: f.PktsUp, PktsDown: f.PktsDown,
 		FirstSeen: float64(f.FirstSeen.UnixNano()) / 1e9,
 		LastSeen:  float64(f.LastSeen.UnixNano()) / 1e9,

@@ -54,6 +54,17 @@ type Flow struct {
 	PktsDown  uint64
 
 	SNI string // straight off the ClientHello, when we saw one
+	// SNISrc says which handshake SNI came from: "sni" for a TLS ClientHello
+	// over TCP, "quic" for one decrypted out of a QUIC Initial.
+	SNISrc string
+	// ECH: the handshake used Encrypted Client Hello with a known public front
+	// (decode.ECHFronts), so SNI is the front, not the destination. ECHOffered:
+	// the ECH extension was present with any other SNI (usually GREASE); the SNI
+	// is the destination. ALPN is what the client offered first ("h2", "h3",
+	// "h1"); h2/h3 connections can be reused for other names.
+	ECH        bool
+	ECHOffered bool
+	ALPN       string
 	// JA4 is the TLS client fingerprint of whatever opened this connection,
 	// from the ClientHello. It names the software, not the destination, and it
 	// survives ECH - so it is the one identity signal left when the SNI is gone.
@@ -192,7 +203,10 @@ func (t *Table) Observe(o *decode.Obs) {
 			State: StateNew, Self: o.PID > 0 && o.PID == t.selfPI,
 			// If the first packet we ever see on a TCP connection is not a
 			// SYN, the handshake happened before we were watching.
-			PreExisting: o.Proto == decode.TCP && !o.SYN,
+			PreExisting: (o.Proto == decode.TCP && !o.SYN) ||
+				// QUIC opens with long-header packets. A UDP/443 flow first
+				// seen on a short header was established before we looked.
+				(o.Proto == decode.UDP && (o.DPort == 443 || o.SPort == 443) && !o.QUICLong),
 		}
 		t.flows[k] = f
 	} else if f.State == StateNew {
@@ -226,6 +240,21 @@ func (t *Table) Observe(o *decode.Obs) {
 	}
 	if o.SNI != "" {
 		f.SNI = o.SNI
+		f.SNISrc = "sni"
+		if o.Proto == decode.UDP {
+			f.SNISrc = "quic"
+		}
+		// A handshake we read is proof we saw the flow open.
+		f.PreExisting = false
+	}
+	if o.ECH {
+		f.ECH = true
+	}
+	if o.ECHOffered {
+		f.ECHOffered = true
+	}
+	if a := decode.ALPNOf(o.JA4); a != "" {
+		f.ALPN = a
 	}
 	if o.JA4 != "" {
 		f.JA4 = o.JA4

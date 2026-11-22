@@ -25,19 +25,32 @@ type InvestigateCtx struct {
 // confident label is lying by simplification. Showing the steps lets a person
 // see which layer a name came from and discount it accordingly.
 func Investigate(ip netip.Addr, port uint16, sni string, c InvestigateCtx) Endpoint {
+	return InvestigateHS(ip, port, sni, string(enrich.SrcSNI), c)
+}
+
+// InvestigateHS is Investigate with the handshake's own source stated: "sni"
+// for a TLS ClientHello over TCP, "quic" for one decrypted from a QUIC Initial.
+func InvestigateHS(ip netip.Addr, port uint16, sni, sniSrc string, c InvestigateCtx) Endpoint {
 	e := Endpoint{IP: ip.String(), Port: port, AgeDays: -1}
 	var trail []string
+	if sniSrc == "" {
+		sniSrc = string(enrich.SrcSNI)
+	}
 
 	// 1. What the client asked for. The only source that speaks to intent.
 	switch {
 	case sni != "":
-		e.Host, e.HostSrc = sni, string(enrich.SrcSNI)
-		trail = append(trail, fmt.Sprintf("resolved to %s (sni)", sni))
+		e.Host, e.HostSrc = sni, sniSrc
+		trail = append(trail, fmt.Sprintf("read %s off this connection's own handshake (%s)", sni, sniSrc))
 	default:
 		if c.Names != nil {
 			if h, src := c.Names.Lookup(ip); h != "" {
 				e.Host, e.HostSrc = h, string(src)
-				trail = append(trail, fmt.Sprintf("resolved to %s (%s)", h, src))
+				if src == enrich.SrcPeer {
+					trail = append(trail, fmt.Sprintf("guessed %s: another connection to this address announced it, this one did not (peer)", h))
+				} else {
+					trail = append(trail, fmt.Sprintf("resolved to %s (%s)", h, src))
+				}
 			}
 		}
 	}
@@ -76,8 +89,7 @@ func Investigate(ip netip.Addr, port uint16, sni string, c InvestigateCtx) Endpo
 	// 4. Who registered the name, and when. Only for names the machine itself
 	//    stated - looking up who owns ec2-...compute.amazonaws.com would just
 	//    report Amazon a second time and tell you nothing about the tenant.
-	stated := e.HostSrc == string(enrich.SrcSNI) || e.HostSrc == string(enrich.SrcDNS) ||
-		e.HostSrc == string(enrich.SrcHTTP)
+	stated := enrich.Source(e.HostSrc).Stated()
 	if e.Host != "" && stated {
 		e.Domain = enrich.Registrable(e.Host)
 		if c.Owners != nil {

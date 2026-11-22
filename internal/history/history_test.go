@@ -8,17 +8,14 @@ import (
 func TestFirstContactAcrossSessions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.json")
 
-	// Session one: a fresh store knows nothing, so the first sighting of a pair
-	// reads as new, and stays new for the rest of the session.
+	// Session one: a fresh store has no baseline, so nothing can be "new"
+	// against it - flagging every flow on first run is noise, not signal.
 	s1 := New(path)
 	if err := s1.Load(); err != nil {
 		t.Fatal(err)
 	}
-	if !s1.FirstContact("curl→evil.example") {
-		t.Error("unknown pair should be first contact")
-	}
-	if !s1.FirstContact("curl→evil.example") {
-		t.Error("pair should stay first contact within the same session")
+	if s1.FirstContact("curl→evil.example") {
+		t.Error("with no history, nothing should read as first contact")
 	}
 	if err := s1.Save(); err != nil {
 		t.Fatal(err)
