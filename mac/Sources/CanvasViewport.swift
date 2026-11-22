@@ -20,6 +20,7 @@ struct CanvasViewport<Content: View>: View {
     @State private var didApplyInitial = false
     @GestureState private var dragDelta: CGSize = .zero
     @GestureState private var pinch: CGFloat = 1
+    @State private var isPanning = false
 
     var body: some View {
         GeometryReader { geo in
@@ -40,15 +41,31 @@ struct CanvasViewport<Content: View>: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .contentShape(Rectangle())
-            .gesture(panGesture)
-            .simultaneousGesture(pinchGesture)
+            // Include descendants so a drag that begins on an app, hostname,
+            // cable label, or the MacBook still moves the whole scene.
+            .simultaneousGesture(panGesture, including: .all)
+            .simultaneousGesture(pinchGesture, including: .all)
             .clipped()
-            // Two-finger scroll pans, which is what a trackpad scroll means
-            // everywhere else on this platform. Zoom is pinch's job.
-            .overlay(ScrollPanCapture { dx, dy in
-                offset.width += dx
-                offset.height += dy
-            })
+            // Observe scroll without placing an invisible NSView over the
+            // graph. The old overlay intercepted node clicks and made the
+            // canvas feel inert.
+            .background(
+                ScrollPanMonitor { dx, dy in
+                    offset.width += dx
+                    offset.height += dy
+                }
+            )
+            .cursor(isPanning ? .closedHand : .openHand)
+            .onTapGesture(count: 2) {
+                withAnimation(.easeOut(duration: 0.22)) {
+                    scale = initialScale
+                    if let focal = focalPoint {
+                        offset = focalOffset(focal: focal, fit: fit)
+                    } else {
+                        offset = .zero
+                    }
+                }
+            }
             .onAppear {
                 guard !didApplyInitial else { return }
                 didApplyInitial = true
@@ -74,10 +91,14 @@ struct CanvasViewport<Content: View>: View {
 
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 4)
-            .updating($dragDelta) { value, state, _ in state = value.translation }
+            .updating($dragDelta) { value, state, _ in
+                state = value.translation
+                if !isPanning { isPanning = true }
+            }
             .onEnded { value in
                 offset.width += value.translation.width
                 offset.height += value.translation.height
+                isPanning = false
             }
     }
 
@@ -92,27 +113,61 @@ struct CanvasViewport<Content: View>: View {
     }
 }
 
-/// Two-finger scroll as pan.
-private struct ScrollPanCapture: NSViewRepresentable {
+/// Two-finger scroll as pan, without becoming a hit-testing overlay.
+private struct ScrollPanMonitor: NSViewRepresentable {
     var onPan: (CGFloat, CGFloat) -> Void
 
-    func makeNSView(context: Context) -> ScrollPanView {
-        let v = ScrollPanView()
-        v.onPan = onPan
+    func makeCoordinator() -> Coordinator { Coordinator(onPan: onPan) }
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView(frame: .zero)
+        context.coordinator.hostView = v
+        context.coordinator.install()
         return v
     }
 
-    func updateNSView(_ nsView: ScrollPanView, context: Context) {
-        nsView.onPan = onPan
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onPan = onPan
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    final class Coordinator {
+        weak var hostView: NSView?
+        var onPan: (CGFloat, CGFloat) -> Void
+        private var monitor: Any?
+
+        init(onPan: @escaping (CGFloat, CGFloat) -> Void) {
+            self.onPan = onPan
+        }
+
+        func install() {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self, let view = hostView, let window = view.window,
+                      event.window === window else { return event }
+
+                let point = view.convert(event.locationInWindow, from: nil)
+                guard view.bounds.contains(point) else { return event }
+
+                onPan(event.scrollingDeltaX, event.scrollingDeltaY)
+                return nil
+            }
+        }
+
+        func uninstall() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
     }
 }
 
-final class ScrollPanView: NSView {
-    var onPan: ((CGFloat, CGFloat) -> Void)?
-
-    override func scrollWheel(with event: NSEvent) {
-        onPan?(event.scrollingDeltaX, event.scrollingDeltaY)
+private extension View {
+    @ViewBuilder
+    func cursor(_ cursor: NSCursor) -> some View {
+        self.onHover { hovering in
+            if hovering { cursor.push() } else { NSCursor.pop() }
+        }
     }
-
-    override var acceptsFirstResponder: Bool { true }
 }
