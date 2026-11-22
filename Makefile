@@ -1,4 +1,6 @@
 BIN := ohmyosi
+NETWORK ?= unlabelled
+REPEAT ?= 1
 
 build:
 	go build -o $(BIN) ./cmd/ohmyosi
@@ -33,8 +35,31 @@ test:
 diff: build
 	./$(BIN) -diff $(A),$(B)
 
+# ACN: controlled experiment with ground truth. No root, no network.
+lab: build
+	@mkdir -p dist
+	go run ./cmd/acn-lab -o dist/lab.pcapng
+	./$(BIN) -eval dist/lab.pcapng -truth dist/lab.truth.json -eval-block telemetry-vendor.example
+
+# ACN: capture this machine for a while, then measure it. Needs root for pktap.
+field: build
+	./tools/field.sh
+
+# ACN main experiment: fixed Tranco list x browser x DoH x cold/warm cache.
+# sudo make workload NETWORK=home REPEAT=1   (then REPEAT=2, 3 on other days)
+workload:
+	NETWORK=$(NETWORK) REPEAT=$(REPEAT) ./tools/workload/run.sh
+
+# ACN: launch-and-idle session per installed desktop app.
+apps:
+	NETWORK=$(NETWORK) REPEAT=$(REPEAT) ./tools/workload/apps.sh
+
+# ACN: measure every capture in dist/runs; tables to stdout, one CSV row per run.
+report: build
+	./$(BIN) -report dist/runs -report-csv dist/runs.csv
+
 clean:
 	rm -f $(BIN)
 	rm -rf dist/OhMyOSI.app dist/OhMyOSI.dmg
 
-.PHONY: build run run-light test diff mac-app mac-watch mac-preview mac-dmg clean
+.PHONY: build run run-light test diff lab field workload apps report mac-app mac-watch mac-preview mac-dmg clean
