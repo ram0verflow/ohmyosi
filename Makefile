@@ -54,6 +54,18 @@ workload:
 apps:
 	NETWORK=$(NETWORK) REPEAT=$(REPEAT) ./tools/workload/apps.sh
 
+# ACN: parallel browsing lanes, one capture per DoH setting (see tools/workload/parallel/run.sh).
+# sudo make parallel NETWORK=home REPEAT=1 DOH="off on"   (next repeat: DOH="on off")
+parallel:
+	NETWORK=$(NETWORK) REPEAT=$(REPEAT) DOH="$(or $(DOH),off on)" ./tools/workload/parallel/run.sh
+
+# ACN: live challenge suite (known-answer connections on the real internet).
+# FIREWALL labels the run: none | littlesnitch | lulu (install/configure by hand).
+challenge:
+	@mkdir -p dist/challenge
+	go build -o dist/challenge/acn-challenge ./cmd/acn-challenge
+	sudo NETWORK=$(NETWORK) FIREWALL=$(or $(FIREWALL),none) REPS=$(or $(REPS),20) ./tools/realtools/challenge.sh
+
 # ACN: measure every capture in dist/runs; tables to stdout, one CSV row per run.
 report: build
 	./$(BIN) -report dist/runs -report-csv dist/runs.csv
@@ -62,4 +74,4 @@ clean:
 	rm -f $(BIN)
 	rm -rf dist/OhMyOSI.app dist/OhMyOSI.dmg
 
-.PHONY: build run run-light test diff lab field workload apps report mac-app mac-watch mac-preview mac-dmg clean
+.PHONY: build run run-light test diff lab field workload apps report challenge parallel mac-app mac-watch mac-preview mac-dmg clean
