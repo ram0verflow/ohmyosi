@@ -236,7 +236,7 @@ drop_profile() {
 	[ "$DRY_RUN" = 1 ] || rm -rf "$profile_root"
 }
 
-browse_pass() { # browser
+browse_pass() { # browser visits-log
 	local i=0
 	while IFS= read -r site; do
 		[ -n "$site" ] || continue
@@ -245,6 +245,9 @@ browse_pass() { # browser
 			[ "$i" -le 2 ] && echo "  visit https://$site/ (${DWELL}s)"
 			continue
 		fi
+		# One line per visit (ms, lane, site) so the report can put each flow on
+		# the page that caused it and give per-site rates.
+		printf '%s000\tmain\t%s\n' "$(date +%s)" "$site" >>"$2"
 		visit "$1" "https://$site/"
 		sleep "$DWELL"
 		[ $((i % 25)) = 0 ] && say "    $i/$n_sites"
@@ -306,7 +309,8 @@ for b in $BROWSERS; do
 			started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 			say "  pass $pass ($cache) -> $(basename "$base").pcapng"
 			start_capture "$base.pcapng"
-			browse_pass "$b"
+			browse_pass "$b" "$base.visits.tsv"
+			[ "$DRY_RUN" = 1 ] || chown "$user" "$base.visits.tsv" 2>/dev/null || true
 			stop_capture "$base.pcapng"
 			manifest "$base.manifest.json" "$b" "$ver" "$d" "$cache" "$pass" "$started"
 		done

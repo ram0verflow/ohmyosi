@@ -1,0 +1,9 @@
+{
+  "name": "ohmyosi-parallel-workload",
+  "private": true,
+  "type": "module",
+  "description": "Parallel, script-driven browsing lanes for the ohmyosi measurement",
+  "dependencies": {
+    "puppeteer-core": "25.14.0"
+  }
+}

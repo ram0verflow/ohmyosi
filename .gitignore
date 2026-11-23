@@ -13,3 +13,4 @@ dist/
 dist/build.log
 Claude outputs/
 _to_delete/
+node_modules/
