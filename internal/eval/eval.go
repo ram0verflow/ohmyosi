@@ -98,6 +98,9 @@ type FlowResult struct {
 	// that named this flow; LSRejected marks a handshake name it refused.
 	LSStep     int  `json:"ls_step,omitempty"`
 	LSRejected bool `json:"ls_rejected,omitempty"`
+	// Unlogged: real tools whose log has no row for this flow. Their output
+	// for it is unknown, which is not the same as showing nothing.
+	Unlogged map[string]bool `json:"unlogged,omitempty"`
 	// Opened, Site and Lane place the flow in a workload's visit log, when
 	// the run recorded one, for per-site statistics.
 	Opened time.Time `json:"opened"`
@@ -120,6 +123,27 @@ type Score struct {
 	// DomainLevel: counted correct, but only at the registrable domain (Little
 	// Snitch's step 4 shows a common domain rather than a host).
 	DomainLevel int `json:"domain_level,omitempty"`
+	// Unlogged: truth flows a real tool's log said nothing about (excluded).
+	Unlogged int `json:"unlogged,omitempty"`
+}
+
+// StrategiesOf lists the modelled strategies plus every real tool that has
+// an opinion (or a recorded silence) about this flow.
+func StrategiesOf(r FlowResult) []string {
+	out := append([]string{}, Strategies...)
+	var real []string
+	for k := range r.Shown {
+		if strings.HasPrefix(k, RealPrefix) {
+			real = append(real, k)
+		}
+	}
+	for k := range r.Unlogged {
+		if _, ok := r.Shown[k]; !ok {
+			real = append(real, k)
+		}
+	}
+	sort.Strings(real)
+	return append(out, real...)
 }
 
 // ProcRow breaks results down per process.
@@ -150,6 +174,9 @@ type Options struct {
 	// Prior is an earlier capture whose DNS answers are preloaded, as a monitor
 	// running across both would hold them (prior.go). Used for warm passes.
 	Prior string
+	// Real adds real tools' logs (tool -> log). Logs next to the capture as
+	// <capture>.<tool>.csv are loaded on top of these automatically.
+	Real map[string]*RealLog
 }
 
 // Report is the whole evaluation.
@@ -187,6 +214,13 @@ func Run(path string, opt Options) (*Report, error) {
 	table.IdleTimeout = 1 << 62 // keep every flow: this is an audit, not a live view
 	ledger := naming.NewLedger()
 	ledger.Slack = opt.Slack
+	real, err := loadRealLogs(path)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range opt.Real {
+		real[k] = v
+	}
 	rep := &Report{Source: path, SlackMS: opt.Slack.Milliseconds(), FanIn: map[int]int{},
 		Tallies: map[string]*naming.Tally{}, Manifest: loadManifest(path)}
 	for _, s := range Correlators {
@@ -336,6 +370,18 @@ func Run(path string, opt Options) (*Report, error) {
 		default:
 			r.Shown[StratRead] = shown(global.Pick, "inferred")
 		}
+		for tool, lg := range real {
+			key := RealPrefix + tool
+			sh, matched, _ := lg.Shown(string(f.Proto), f.Remote, r.Comm, f.FirstSeen)
+			if !matched {
+				if r.Unlogged == nil {
+					r.Unlogged = map[string]bool{}
+				}
+				r.Unlogged[key] = true
+				continue
+			}
+			r.Shown[key] = sh
+		}
 		if opt.Truth != nil {
 			if t, ok := opt.Truth[r.Key]; ok {
 				tt := t
@@ -393,10 +439,21 @@ func Run(path string, opt Options) (*Report, error) {
 	}
 
 	if opt.Truth != nil {
-		for _, s := range Strategies {
+		strategies := append([]string{}, Strategies...)
+		var tools []string
+		for tool := range real {
+			tools = append(tools, RealPrefix+tool)
+		}
+		sort.Strings(tools)
+		strategies = append(strategies, tools...)
+		for _, s := range strategies {
 			sc := Score{Strategy: s}
 			for _, r := range rep.Results {
 				if r.Truth == nil {
+					continue
+				}
+				if r.Unlogged[s] {
+					sc.Unlogged++
 					continue
 				}
 				sc.Flows++
@@ -594,6 +651,11 @@ func (r *Report) Print(w io.Writer) {
 			fmt.Fprintf(w, "  %-26s %5d %8s %6d %8d %7d\n", s.Strategy, s.Flows, pct(s.Correct, s.Flows), s.Wrong, s.Missing, s.Misled)
 		}
 		fmt.Fprintln(w, "  misled = a wrong name presented as read off the connection")
+		for _, sc := range r.Scores {
+			if sc.Unlogged > 0 {
+				fmt.Fprintf(w, "  %s: %d truth flows not in its log (excluded)\n", sc.Strategy, sc.Unlogged)
+			}
+		}
 	}
 }
 

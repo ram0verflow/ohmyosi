@@ -43,6 +43,7 @@ bin="$OUT/acn-challenge"
 stamp="$(date +%Y%m%d-%H%M)"
 base="$OUT/$stamp-$NETWORK-$FIREWALL"
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+begin_local="$(date '+%Y-%m-%d %H:%M:%S')"
 say "capture -> $(basename "$base").pcapng"
 tcpdump -i pktap,all -s 2048 -U -w "$base.pcapng" >/dev/null 2>&1 &
 cap=$!
@@ -56,6 +57,8 @@ rc=$?
 
 sleep 2
 kill -INT "$cap"; wait "$cap" 2>/dev/null
+sleep 5 # let the firewall flush its interval statistics
+"$here/export.sh" "$FIREWALL" "$base" "$begin_local" "$(date '+%Y-%m-%d %H:%M:%S')"
 resolver="$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/{print $3; exit}')"
 cat >"$base.manifest.json" <<JSON
 {

@@ -57,7 +57,7 @@ apps:
 # ACN: parallel browsing lanes, one capture per DoH setting (see tools/workload/parallel/run.sh).
 # sudo make parallel NETWORK=home REPEAT=1 DOH="off on"   (next repeat: DOH="on off")
 parallel:
-	NETWORK=$(NETWORK) REPEAT=$(REPEAT) DOH="$(or $(DOH),off on)" ./tools/workload/parallel/run.sh
+	NETWORK=$(NETWORK) REPEAT=$(REPEAT) DOH="$(or $(DOH),off on)" FIREWALL=$(or $(FIREWALL),none) ./tools/workload/parallel/run.sh
 
 # ACN: live challenge suite (known-answer connections on the real internet).
 # FIREWALL labels the run: none | littlesnitch | lulu (install/configure by hand).

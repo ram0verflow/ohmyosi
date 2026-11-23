@@ -56,6 +56,22 @@ type Counts struct {
 	LSSteps      map[int]int `json:"ls_steps"`
 	LSStep2Wrong int         `json:"ls_step2_wrong"`
 	LSRejected   int         `json:"ls_rejected"`
+	// RealGraded: readable flows each real tool's log covered - the
+	// denominator for its rates (flows it never logged are excluded).
+	RealGraded map[string]int `json:"real_graded,omitempty"`
+}
+
+// RealError is a real tool's wrong-or-blank over the readable flows its log covered.
+func (c Counts) RealError(s string) (int, int) { return c.SWrong[s] + c.SBlind[s], c.RealGraded[s] }
+
+// realStrategies lists the real tools seen in c, sorted.
+func (c Counts) realStrategies() []string {
+	var out []string
+	for s := range c.RealGraded {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func newCounts() Counts {
@@ -68,6 +84,9 @@ func newCounts() Counts {
 // the flow's own handshake name: "agree", "wrong", "blind", or "" when the
 // flow has no trustworthy handshake name to grade against.
 func shownOutcome(r FlowResult, s string) string {
+	if r.Unlogged[s] {
+		return ""
+	}
 	v := r.V()
 	if !(v.Class.Comparable() || v.Class == naming.HandshakeOnly) || v.Handshake == "" {
 		return ""
@@ -116,7 +135,13 @@ func (c *Counts) add(r FlowResult) {
 			c.ComparableNC++
 		}
 	}
-	for _, s := range Strategies {
+	for _, s := range StrategiesOf(r) {
+		if strings.HasPrefix(s, RealPrefix) && !r.Unlogged[s] && shownOutcome(r, s) != "" {
+			if c.RealGraded == nil {
+				c.RealGraded = map[string]int{}
+			}
+			c.RealGraded[s]++
+		}
 		switch shownOutcome(r, s) {
 		case "wrong":
 			c.SWrong[s]++
@@ -181,6 +206,12 @@ func (c *Counts) merge(o Counts) {
 	}
 	for k, v := range o.LSSteps {
 		c.LSSteps[k] += v
+	}
+	for k, v := range o.RealGraded {
+		if c.RealGraded == nil {
+			c.RealGraded = map[string]int{}
+		}
+		c.RealGraded[k] += v
 	}
 	c.LSStep2Wrong += o.LSStep2Wrong
 	c.LSRejected += o.LSRejected
@@ -450,6 +481,10 @@ func PrintSummary(w io.Writer, runs []RunSummary) {
 	for _, st := range Strategies {
 		fmt.Fprintf(w, "  %-26s %-24s %-24s %8d %8d\n", st, PctCI(total.ShownError(st)), PctCI(total.ShownErrorNC(st)),
 			total.SWrong[st], total.SBlind[st])
+	}
+	for _, st := range total.realStrategies() {
+		fmt.Fprintf(w, "  %-26s %-24s %-24s %8d %8d   (over the %d readable flows its log covered)\n", st,
+			PctCI(total.RealError(st)), "", total.SWrong[st], total.SBlind[st], total.RealGraded[st])
 	}
 
 	fmt.Fprintln(w, "\nLITTLE SNITCH MODEL (macOS, documented steps, default verification; readable focus flows)")

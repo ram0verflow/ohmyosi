@@ -1,8 +1,10 @@
 package eval_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,4 +136,41 @@ func TestWilson(t *testing.T) {
 	if lo < 0.40 || lo > 0.41 || hi < 0.59 || hi > 0.60 {
 		t.Fatalf("50/100: %v %v", lo, hi)
 	}
+}
+
+// A real tool's log next to the capture becomes strategy real:<tool>, scored
+// against truth like the models; flows it never logged are excluded, not
+// counted as blank.
+func TestRealToolOnLab(t *testing.T) {
+	path, truth := buildLab(t)
+	// A pretend tool that logged two flows: Notion's (wrongly, as the ad
+	// domain) and Brave's alias (correctly).
+	csv := "time,executable,ip,port,protocol,name\n" +
+		fmt.Sprintf("%d,Notion Helper,104.18.32.7,443,tcp,ads.adnetwork.example\n", labAt(11).UnixMilli()) +
+		fmt.Sprintf("%d,Brave Browser He,104.18.32.7,443,tcp,ads.adnetwork.example\n", labAt(12.5).UnixMilli())
+	if err := os.WriteFile(strings.TrimSuffix(path, ".pcapng")+".faketool.csv", []byte(csv), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := eval.Run(path, eval.Options{Truth: truth, Slack: naming.DefaultSlack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sc *eval.Score
+	for i := range rep.Scores {
+		if rep.Scores[i].Strategy == "real:faketool" {
+			sc = &rep.Scores[i]
+		}
+	}
+	if sc == nil {
+		t.Fatal("no real:faketool score")
+	}
+	// Notion has three flows to that edge in the lab; Brave one. All four
+	// match a row (same address, executable, within the window).
+	if sc.Flows+sc.Unlogged != len(truth) || sc.Flows == 0 || sc.Misled == 0 {
+		t.Fatalf("score %+v", *sc)
+	}
+}
+
+func labAt(sec float64) time.Time {
+	return time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC).Add(time.Duration(sec * float64(time.Second)))
 }

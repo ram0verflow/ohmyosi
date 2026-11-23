@@ -178,16 +178,25 @@ headless asks the same DNS and TLS questions.
 
 1. **Setup.** Run `(cd tools/workload/parallel && npm ci)` once. For a Safari
    lane: `sudo safaridriver --enable` and Safari > Develop > Allow Remote Automation.
-2. **Real-tool harness** (`tools/realtools/`, not built yet). For **Little Snitch**
-   and **LuLu** on this Mac, find out from their docs and CLI help how to export
-   what each displayed per connection (process, remote IP/port, name, time);
-   verify, don't guess. Write importers into a common CSV, join to flows by
-   5-tuple + time window, and add strategies `real:littlesnitch` / `real:lulu`
-   scored exactly like the modelled ones (correct/wrong/missing/misled, per
-   cause, per challenge scenario). Document the manual steps: install, approve
-   the system extension, set allow-all / no blocking. Verify pktap still sees
-   all traffic with each tool active. Portmaster and OpenSnitch are Linux-only:
-   UTM Linux VM, stretch goal only.
+2. **Real-tool harness: built 2026-11-23** (`internal/eval/realtools.go`,
+   `tools/realtools/export.sh`, `tools/realtools/README.md`). Little Snitch's
+   `sudo littlesnitch log-traffic` CSV (documented fields: date, ipAddress,
+   remoteHostname, protocol, port, connectingExecutable, …) is exported
+   automatically for each capture window when `FIREWALL=littlesnitch`, saved
+   as `<capture>.littlesnitch.csv`, joined to flows (address, port, protocol,
+   executable, ±2 min), and scored as `real:littlesnitch`, both against truth
+   and against the handshake name. Flows the log never mentions are
+   "unlogged" and excluded, not counted as blank. **Still to do on the Mac:**
+   - the owner installs and approves Little Snitch, turns on "Allow access via
+     Terminal" and sets allow-all;
+   - verify the CLI path and the date format of `log-traffic`;
+   - for LuLu, inspect the raw unified log `export.sh` saves and write the
+     converter to the common CSV (`time,executable,ip,port,protocol,name`),
+     if LuLu logs host names at all.
+
+     LuLu takes names from the OS (`flow.URL.host` / `remoteHostname`, i.e.
+     Little Snitch's unobservable step 1), so LuLu runs measure how often
+     macOS supplies a name.
 3. **Smoke test** (owner runs sudo):
    - `sudo make parallel NETWORK=test REPEAT=0 DOH="off on" SITES=20` with
      `LANES=chrome:2,firefox:1`;

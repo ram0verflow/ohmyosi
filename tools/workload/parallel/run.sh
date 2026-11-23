@@ -21,6 +21,7 @@ SITES="${SITES:-500}"
 DWELL="${DWELL:-6}"
 REPEAT="${REPEAT:-1}"
 NETWORK="${NETWORK:-unlabelled}"
+FIREWALL="${FIREWALL:-none}" # none | littlesnitch | lulu: exports its log next to each capture
 LIST="${LIST:-V38GN}"
 OUT="${OUT:-$repo/dist/runs}"
 
@@ -56,6 +57,7 @@ for d in $DOH; do
 	say "== DoH $d: lanes $LANES, safari=$SAFARI -> $(basename "$base")"
 	dscacheutil -flushcache; killall -HUP mDNSResponder 2>/dev/null; sleep 1
 	started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	begin_local="$(date '+%Y-%m-%d %H:%M:%S')"
 	tcpdump -i pktap,all -s 2048 -U -w "$base.pcapng" >/dev/null 2>&1 &
 	cap=$!
 	sleep 2
@@ -63,6 +65,8 @@ for d in $DOH; do
 		--dwell "$DWELL" --out "$base" "${safari_flag[@]}"
 	sleep 3
 	kill -INT "$cap"; wait "$cap" 2>/dev/null
+	sleep 5
+	"$repo/tools/realtools/export.sh" "$FIREWALL" "$base" "$begin_local" "$(date '+%Y-%m-%d %H:%M:%S')"
 	ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	# Merge the run's facts and the lanes (with their PIDs) into the manifest.
 	as_user env BASE="$base" "$node" -e '
@@ -75,7 +79,7 @@ for d in $DOH; do
 		m.visits_failed = lanes.reduce((n, l) => n + l.failed, 0);
 		for (const l of lanes) m[l.browser + "_version"] = l.version;
 		fs.writeFileSync(b + ".manifest.json", JSON.stringify(m, null, 2));
-	' "{\"workload\":\"tranco-parallel\",\"browsers\":\"$browsers\",\"doh\":\"$d\",\"cache\":\"cold\",\"network\":\"$NETWORK\",\"repeat\":$REPEAT,\"tranco_list\":\"$LIST\",\"dwell_s\":$DWELL,\"lanes_spec\":\"$LANES\",\"resolver\":\"$resolver\",\"protocol\":\"$protocol\",\"macos\":\"$(sw_vers -productVersion)\",\"macos_build\":\"$(sw_vers -buildVersion)\",\"started\":\"$started\",\"ended\":\"$ended\"}"
+	' "{\"workload\":\"tranco-parallel\",\"browsers\":\"$browsers\",\"doh\":\"$d\",\"cache\":\"cold\",\"network\":\"$NETWORK\",\"repeat\":$REPEAT,\"firewall\":\"$FIREWALL\",\"tranco_list\":\"$LIST\",\"dwell_s\":$DWELL,\"lanes_spec\":\"$LANES\",\"resolver\":\"$resolver\",\"protocol\":\"$protocol\",\"macos\":\"$(sw_vers -productVersion)\",\"macos_build\":\"$(sw_vers -buildVersion)\",\"started\":\"$started\",\"ended\":\"$ended\"}"
 	chown "$user" "$base".* 2>/dev/null
 done
 say "done. make report"
