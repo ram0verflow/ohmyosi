@@ -288,7 +288,7 @@ func dohResolve(name string) (dohAnswer, error) {
 		if r.Type != 1 {
 			continue
 		}
-		if ip, err := netip.ParseAddr(r.Data); err == nil {
+		if ip, err := netip.ParseAddr(r.Data); err == nil && dialable(ip) {
 			a.IPs = append(a.IPs, ip)
 			if a.TTL == 0 || r.TTL < a.TTL {
 				a.TTL = r.TTL
@@ -296,6 +296,28 @@ func dohResolve(name string) (dohAnswer, error) {
 		}
 	}
 	return a, nil
+}
+
+// notDialable are IPv4 ranges a parked or sinkholed name may answer with
+// that can't be reached on the internet; two such names would otherwise
+// "share" an address (seen: myqcloud.com and tencent-cloud.net at 0.0.0.1).
+var notDialable = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"), // carrier-grade NAT
+	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking; also fake-IP proxies
+}
+
+// dialable reports whether ip is a public IPv4 address worth connecting to.
+func dialable(ip netip.Addr) bool {
+	if !ip.Is4() || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, p := range notDialable {
+		if p.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 func discover(cands []string) map[string]dohAnswer {

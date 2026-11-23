@@ -23,6 +23,8 @@ LIST="${LIST:-V38GN}"
 OUT="$repo/dist/challenge"
 
 say() { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*"; }
+# shellcheck source=../resolver.sh
+. "$repo/tools/resolver.sh"
 [ "$(uname)" = Darwin ] || { say "run on the Mac"; exit 1; }
 [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] || { say "run with sudo from your own account (capture and DNS flush need root)"; exit 1; }
 user="$SUDO_USER"
@@ -40,6 +42,13 @@ fi
 bin="$OUT/acn-challenge"
 [ -x "$bin" ] || { say "build it first: go build -o dist/challenge/acn-challenge ./cmd/acn-challenge (or: make challenge)"; exit 1; }
 
+# Probe before the capture: the probe's own lookups must not be in it.
+resolver_probe
+say "resolver $RESOLVER (ddr $RESOLVER_DDR, encrypted $RESOLVER_ENCRYPTED)"
+case "$RESOLVER_ENCRYPTED" in yes | likely)
+	say "WARNING: system DNS is likely encrypted; DNS answers will not be on the wire" ;;
+esac
+
 stamp="$(date +%Y%m%d-%H%M)"
 base="$OUT/$stamp-$NETWORK-$FIREWALL"
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -47,6 +56,8 @@ begin_local="$(date '+%Y-%m-%d %H:%M:%S')"
 say "capture -> $(basename "$base").pcapng"
 tcpdump -i pktap,all -s 2048 -U -w "$base.pcapng" >/dev/null 2>&1 &
 cap=$!
+# Never leave a root tcpdump behind if the run dies part-way.
+trap '[ -n "$cap" ] && kill -INT "$cap" 2>/dev/null' EXIT
 sleep 2
 caffeinate -dimsu -w $$ &
 
@@ -56,10 +67,9 @@ args=(-names "$names" -limit 1000 -n "$REPS" -o "$base")
 rc=$?
 
 sleep 2
-kill -INT "$cap"; wait "$cap" 2>/dev/null
+kill -INT "$cap"; wait "$cap" 2>/dev/null; cap=
 sleep 5 # let the firewall flush its interval statistics
 "$here/export.sh" "$FIREWALL" "$base" "$begin_local" "$(date '+%Y-%m-%d %H:%M:%S')"
-resolver="$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/{print $3; exit}')"
 cat >"$base.manifest.json" <<JSON
 {
   "workload": "challenge",
@@ -68,7 +78,7 @@ cat >"$base.manifest.json" <<JSON
   "only": "$ONLY",
   "network": "$NETWORK",
   "tranco_list": "$LIST",
-  "resolver": "$resolver",
+$(resolver_manifest_fields)
   "macos": "$(sw_vers -productVersion)",
   "macos_build": "$(sw_vers -buildVersion)",
   "started": "$started",

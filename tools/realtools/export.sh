@@ -24,6 +24,12 @@ littlesnitch)
 		echo "export: log-traffic failed (is 'Allow access via Terminal' on?)" >&2
 		exit 1
 	}
+	# Refusals ("not authorized ...") arrive on stdout, so check for the CSV header.
+	if ! head -1 "$base.littlesnitch.csv" | grep -q '^date,'; then
+		echo "export: log-traffic did not return CSV: $(head -2 "$base.littlesnitch.csv" | tr '\n' ' ')" >&2
+		mv "$base.littlesnitch.csv" "$base.littlesnitch.err"
+		exit 1
+	fi
 	echo "export: $(($(wc -l <"$base.littlesnitch.csv") - 1)) Little Snitch rows -> $(basename "$base").littlesnitch.csv" >&2
 	;;
 lulu)

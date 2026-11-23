@@ -26,6 +26,8 @@ LIST="${LIST:-V38GN}"
 OUT="${OUT:-$repo/dist/runs}"
 
 say() { printf '%s  %s\n' "$(date +%H:%M:%S)" "$*"; }
+# shellcheck source=../../resolver.sh
+. "$repo/tools/resolver.sh"
 [ "$(uname)" = Darwin ] || { say "run on the Mac"; exit 1; }
 [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] || { say "run with sudo from your own account"; exit 1; }
 user="$SUDO_USER"
@@ -47,14 +49,22 @@ browsers="$(printf '%s' "$LANES" | tr ',' '\n' | cut -d: -f1 | sort -u | paste -
 [ "$SAFARI" = 1 ] && browsers="$browsers,safari"
 safari_flag=()
 [ "$SAFARI" = 1 ] && safari_flag=(--safari)
-resolver="$(scutil --dns 2>/dev/null | awk '/nameserver\[0\]/{print $3; exit}')"
 protocol="$(sudo -u "$user" git -C "$repo" describe --tags --always --dirty 2>/dev/null || echo unknown)"
 caffeinate -dimsu -w $$ &
 
 stamp="$(date +%Y%m%d-%H%M)"
+# Never leave a root tcpdump behind if the run dies part-way.
+cap=
+trap '[ -n "$cap" ] && kill -INT "$cap" 2>/dev/null' EXIT
 for d in $DOH; do
 	base="$OUT/$stamp-$NETWORK-r$REPEAT-parallel-doh$d-cold"
 	say "== DoH $d: lanes $LANES, safari=$SAFARI -> $(basename "$base")"
+	# Probe before flushing: the probe's own lookups must not be in the capture.
+	resolver_probe
+	say "   resolver $RESOLVER (ddr $RESOLVER_DDR, encrypted $RESOLVER_ENCRYPTED)"
+	case "$RESOLVER_ENCRYPTED" in yes | likely)
+		say "   WARNING: system DNS is likely encrypted; DNS answers will not be on the wire" ;;
+	esac
 	dscacheutil -flushcache; killall -HUP mDNSResponder 2>/dev/null; sleep 1
 	started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	begin_local="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -62,9 +72,9 @@ for d in $DOH; do
 	cap=$!
 	sleep 2
 	as_user "$node" "$here/lanes.mjs" --sites "$sites_file" --browsers "$LANES" --doh "$d" \
-		--dwell "$DWELL" --out "$base" "${safari_flag[@]}"
+		--dwell "$DWELL" --out "$base" ${safari_flag[@]+"${safari_flag[@]}"}
 	sleep 3
-	kill -INT "$cap"; wait "$cap" 2>/dev/null
+	kill -INT "$cap"; wait "$cap" 2>/dev/null; cap=
 	sleep 5
 	"$repo/tools/realtools/export.sh" "$FIREWALL" "$base" "$begin_local" "$(date '+%Y-%m-%d %H:%M:%S')"
 	ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -79,7 +89,7 @@ for d in $DOH; do
 		m.visits_failed = lanes.reduce((n, l) => n + l.failed, 0);
 		for (const l of lanes) m[l.browser + "_version"] = l.version;
 		fs.writeFileSync(b + ".manifest.json", JSON.stringify(m, null, 2));
-	' "{\"workload\":\"tranco-parallel\",\"browsers\":\"$browsers\",\"doh\":\"$d\",\"cache\":\"cold\",\"network\":\"$NETWORK\",\"repeat\":$REPEAT,\"firewall\":\"$FIREWALL\",\"tranco_list\":\"$LIST\",\"dwell_s\":$DWELL,\"lanes_spec\":\"$LANES\",\"resolver\":\"$resolver\",\"protocol\":\"$protocol\",\"macos\":\"$(sw_vers -productVersion)\",\"macos_build\":\"$(sw_vers -buildVersion)\",\"started\":\"$started\",\"ended\":\"$ended\"}"
+	' "{\"workload\":\"tranco-parallel\",\"browsers\":\"$browsers\",\"doh\":\"$d\",\"cache\":\"cold\",\"network\":\"$NETWORK\",\"repeat\":$REPEAT,\"firewall\":\"$FIREWALL\",\"tranco_list\":\"$LIST\",\"dwell_s\":$DWELL,\"lanes_spec\":\"$LANES\",\"resolver\":\"$RESOLVER\",\"resolver_ddr\":\"$RESOLVER_DDR\",\"resolver_encrypted\":\"$RESOLVER_ENCRYPTED\",\"protocol\":\"$protocol\",\"macos\":\"$(sw_vers -productVersion)\",\"macos_build\":\"$(sw_vers -buildVersion)\",\"started\":\"$started\",\"ended\":\"$ended\"}"
 	chown "$user" "$base".* 2>/dev/null
 done
 say "done. make report"

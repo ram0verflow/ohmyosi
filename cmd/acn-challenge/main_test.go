@@ -38,6 +38,19 @@ func TestSharedPairs(t *testing.T) {
 	}
 }
 
+func TestDialable(t *testing.T) {
+	for s, want := range map[string]bool{
+		"104.18.1.1": true, "59.111.160.244": true,
+		"0.0.0.1": false, "0.0.0.0": false, "127.0.0.1": false, "10.0.0.1": false,
+		"192.168.1.1": false, "100.64.0.1": false, "198.18.0.5": false, "169.254.1.1": false,
+		"224.0.0.1": false, "255.255.255.255": false, "2606:4700::1": false,
+	} {
+		if got := dialable(netip.MustParseAddr(s)); got != want {
+			t.Errorf("dialable(%s) = %v, want %v", s, got, want)
+		}
+	}
+}
+
 func TestPartition(t *testing.T) {
 	ps := make([]pair, 10)
 	for i := range ps {

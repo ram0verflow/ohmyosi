@@ -229,8 +229,13 @@ async function main() {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((e) => {
-    console.error(e.message || e);
-    process.exit(1);
-  });
+  // Exit explicitly: a closed puppeteer browser (Firefox over BiDi) can
+  // leave a handle open, and run.sh waits on this process.
+  main().then(
+    () => process.exit(0),
+    (e) => {
+      console.error(e.message || e);
+      process.exit(1);
+    },
+  );
 }
