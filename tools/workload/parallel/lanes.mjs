@@ -169,7 +169,7 @@ async function runLane(lane, sites, a, log) {
   if (lane.browser === "safari") return safariLane(lane, sites, a, log);
   const browser = await launch(lane, a.doh);
   lane.rootPid = browser.process()?.pid;
-  const page = await browser.newPage();
+  let page = await browser.newPage();
   try {
     for (const site of sites) {
       log(lane.id, site);
@@ -178,6 +178,12 @@ async function runLane(lane, sites, a, log) {
         await page.goto(`https://${site}/`, { waitUntil: "domcontentloaded", timeout: a.timeout * 1000 });
       } catch (e) {
         outcome = String(e.message || e).split("\n")[0];
+        // Start the next site in a fresh tab: after one timeout (seen on
+        // pinterest.com) Firefox over BiDi never reports domcontentloaded
+        // again in that tab, so every later visit timed out.
+        const old = page;
+        page = await browser.newPage();
+        await old.close().catch(() => {});
       }
       lane.visits.push({ site, outcome });
       await sleep(a.dwell * 1000);
