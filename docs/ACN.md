@@ -55,7 +55,9 @@ reproducible by anyone with the workload scripts. Population prevalence is not c
 |---|---|---|
 | last-answer | latest DNS answer for the address, any process | OpenSnitch, Little Snitch for Linux |
 | per-process | latest answer this app asked for | Little Snitch DNS sniffing, Portmaster |
-| header-first | handshake name, else per-process | Little Snitch on macOS |
+| header-first | handshake name, else per-process | simplified header reader |
+| littlesnitch-mac | app's single DNS name; else handshake name only if a DNS answer backs it ("Verify server names asserted by process", default on); else common domain; else address | Little Snitch on macOS, by its documented steps (step 1, the Network Extension name, is unobservable, so its error is an upper bound) |
+| littlesnitch-mac-noverify | same, handshake name accepted unverified | Little Snitch with verification switched off |
 | address-cache | any name cached for the address | ohmyosi v0.1 |
 | read-first | own handshake as read; else per-process, labelled a guess | ohmyosi now |
 

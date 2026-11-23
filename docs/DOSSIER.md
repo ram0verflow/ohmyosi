@@ -1,7 +1,7 @@
 # Handoff dossier — ohmyosi / "Read, Don't Infer"
 
 For the agent picking this up. Read this whole file before touching code or
-running anything. Written 2026-11-22.
+running anything. Written 2026-11-22, updated 2026-11-23.
 
 **Deadline:** course report (ACN) due **2026-11-28**, 5–6 pages, teacher's
 conference template (`.docx`), fixed headings: Abstract (~250 words),
@@ -114,75 +114,133 @@ What this already tells us:
 
 ## 5. Unfinished work, in priority order
 
-### P0, do before the overnight runs (needed for a correct method)
+**Update 2026-11-23.** The design is now the one the owner chose: the
+original goal (per-app disagreement + cross-process + causes), made
+defensible and fast with three ingredients:
+1. **parallel browser lanes** (many independent instances at once, one capture);
+2. a **live challenge suite** of known-answer connections on the real internet;
+3. **real firewalls** (Little Snitch, LuLu) running alongside, scored on what
+   they actually displayed.
 
-**P0-1. Model Little Snitch on macOS exactly as documented.** The current
-`header-first` strategy takes SNI first; Little Snitch does not. Implement a
-`littlesnitch-mac` strategy in `internal/eval/eval.go` (keep `header-first`
-too, or rename it, and say which in `docs/ACN.md`):
-1. *(not observable in packets: NE-supplied name. State it as a limitation;
-   it makes our Little Snitch error an upper bound.)*
-2. If this app (effective PID) resolved **exactly one** name to this IP → use it.
-3. Else read SNI, but by default accept it **only if it matches a DNS lookup
-   seen** for that IP ("uses an SNI asserted by a process only if it matches a
-   DNS lookup it has seen", Little Snitch FAQ via the novelty report). If the SNI
-   doesn't match, it's rejected.
-4. Else, if all candidate names share a registrable domain → that domain. Else → bare IP.
+Headless browsers are fine: the measurement is at the network level, and
+headless asks the same DNS and TLS questions.
 
-Score it on correct / wrong / missing / misled. Add lab scenarios: (a) a stale
-unique per-process name, where step 2 is wrong; (b) a DoH app whose SNI has
-no matching lookup, where step 3 rejects it and shows a bare IP. Report
-"share of connections named at step 2" and "step-2 disagreement with SNI".
-That is the strongest single number for the paper.
-Sources: https://help.obdev.at/littlesnitch6/adv-server-names ,
-https://www.obdev.at/support/littlesnitch (FAQ, not yet opened in full:
-fetch it and quote verbatim before relying on it).
+### Done on 2026-11-23 (tested: `go test ./...`, lab pins, a live Chromium run of the driver)
 
-**P0-2. Decide how coalescing counts.** Today a coalescing candidate
-(h2/h3, and the same app resolved other names to that IP during the flow)
-is still graded `alias`/`mismatch` with cause `coalesced`. Recommended:
-- keep the grade, but in **every** headline table report disagreement and
-  correlation error **three ways**: all comparable flows, excluding
-  coalescing candidates, and coalescing candidates only;
-- in the text, call coalesced disagreement "ambiguous by construction:
-  the connection may legitimately carry both names";
-- add this to `report.go` (pooled table) and the CSV.
+- **Little Snitch model, exactly as documented** (`internal/eval/littlesnitch.go`),
+  strategies `littlesnitch-mac` (default "Verify server names asserted by
+  process" ON) and `littlesnitch-mac-noverify`. The steps:
+  2. the app's single DNS name for the IP, handshake unchecked;
+  3. the SNI, accepted by default only if some DNS answer mapped it to that IP;
+  4. the common registrable domain of the app's names;
+  5. otherwise the bare address.
 
-**P0-3. Smoke-check once more after P0-1/P0-2:** `go test ./...`, `make lab`,
-`make report` on `dist/runs`. The lab table numbers may change only for new
-scenarios; explain any change.
+  Step 1 (the NE name) is not observable, so its error is an upper bound.
+  Lab: 17/27 correct, 2 misled (verify on); 23/27, 2 misled (verify off).
+  Verified quote (FAQ): "By default, Little Snitch uses the server name that a
+  process sends only if it matches a DNS lookup it has seen."
+  (https://www.obdev.at/support/littlesnitch)
+- **Coalescing three-way split** in the report: disagreement over all comparable
+  flows, excluding coalescing candidates, and candidates only (RFC 9113 §9.1.1:
+  one HTTP/2 connection may legitimately serve several origins).
+- **Every strategy graded against the handshake name** in field data, including
+  both Little Snitch models; plus a Little Snitch step breakdown (share named at
+  step 2, step-2 disagreement, handshake names refused by verification).
+- **Cross-process counted only between different apps** (`naming.AppFamily`).
+  Two instances of one browser borrowing from each other are counted as
+  `sibling_process`, not as cross-process.
+- **Per-site statistics.** Workloads write `<capture>.visits.tsv`, and parallel
+  runs record each lane's PIDs. The report shows the median and IQR across sites
+  next to the pooled Wilson rates.
+- **Parallel lanes** (`tools/workload/parallel/`, Node + puppeteer-core 25.14.0):
+  installed Chrome (headless), installed Firefox via WebDriver BiDi, optional one
+  Safari lane via safaridriver; deterministic sharding; one capture per DoH
+  setting; `sudo make parallel NETWORK=home REPEAT=1 DOH="off on"`. A parallel
+  capture is reported as one summary per browser.
+- **Challenge suite** (`cmd/acn-challenge`, `tools/realtools/challenge.sh`,
+  `make challenge`). Known-answer connections on the real internet, each logged
+  with its 5-tuple, scenario and announced name, into a truth file for
+  `ohmyosi -eval <cap> -truth <cap>.truth.json`. Scenarios:
+  - baseline;
+  - cohost (decoy looked up after the real name on a shared IP);
+  - crossprocess (separate executables `acn-resolver` / `acn-fetcher`);
+  - doh;
+  - stale (wait past TTL);
+  - coalesce (one HTTP/2 connection, two authorities);
+  - snihost (SNI ≠ Host).
+
+  Pairs come from DoH discovery over the Tranco top 1000 (top 200 gave only 11
+  pairs). Each scenario gets its own addresses. Caveat: some pairs are one
+  company under two domains (facebook.com / fbcdn.net). That's still a different
+  name shown, but don't call it "a different organisation" without checking.
+
+### P0, still open (needs the Mac; give to Claude Code there)
+
+1. **Setup.** Run `(cd tools/workload/parallel && npm ci)` once. For a Safari
+   lane: `sudo safaridriver --enable` and Safari > Develop > Allow Remote Automation.
+2. **Real-tool harness** (`tools/realtools/`, not built yet). For **Little Snitch**
+   and **LuLu** on this Mac, find out from their docs and CLI help how to export
+   what each displayed per connection (process, remote IP/port, name, time);
+   verify, don't guess. Write importers into a common CSV, join to flows by
+   5-tuple + time window, and add strategies `real:littlesnitch` / `real:lulu`
+   scored exactly like the modelled ones (correct/wrong/missing/misled, per
+   cause, per challenge scenario). Document the manual steps: install, approve
+   the system extension, set allow-all / no blocking. Verify pktap still sees
+   all traffic with each tool active. Portmaster and OpenSnitch are Linux-only:
+   UTM Linux VM, stretch goal only.
+3. **Smoke test** (owner runs sudo):
+   - `sudo make parallel NETWORK=test REPEAT=0 DOH="off on" SITES=20` with
+     `LANES=chrome:2,firefox:1`;
+   - `make challenge NETWORK=test REPS=3`, first with no firewall, then with
+     `FIREWALL=littlesnitch`.
+
+   Then `make report` and `./ohmyosi -eval <challenge>.pcapng -truth
+   <challenge>.truth.json`. Check that:
+   - visits map to sites;
+   - lanes map to PIDs;
+   - the challenge truth keys match flows (the eval output's "AGAINST GROUND TRUTH"
+     flow count should be close to the number of connections logged);
+   - crossprocess reps show as cross-process under last-answer.
+4. **Freeze the protocol:** `git tag protocol-v1` once the smoke test is right.
 
 ### P0, data collection (owner runs these; needs sudo + their Mac)
 
-Before every run:
-- **Wi-Fi DNS must be the router or campus resolver**, never 8.8.8.8, 1.1.1.1 or
-  9.9.9.9 (DDR hides DNS). Check the report's resolver line.
-- Quit Chrome and Firefox. Keep the Mac awake and plugged in.
-  `SITES=100 DWELL=8` (≈ 2.5 h per repeat for all conditions).
+Before every run: Wi-Fi DNS = router or campus resolver (never 8.8.8.8,
+1.1.1.1 or 9.9.9.9: DDR hides DNS). Mac plugged in. Your own Chrome and
+Firefox can stay open for parallel runs (lanes use their own instances), but
+close heavy apps.
 
-| # | Command | When |
+| # | Command | Notes |
 |---|---|---|
-| 1 | `sudo make workload NETWORK=home REPEAT=1` | tonight |
-| 2 | `sudo make apps NETWORK=home REPEAT=1` | ~20 min |
-| 3 | `sudo make workload NETWORK=home REPEAT=2` | next night |
-| 4 | `sudo make workload NETWORK=campus REPEAT=1` (check resolver first) | when on campus |
-| 5 | `sudo make workload NETWORK=hotspot REPEAT=1` | if time |
-| 6 | `sudo make field` × 2–3 sessions of normal use | any time |
+| 1 | `sudo make parallel NETWORK=home REPEAT=1 DOH="off on"` | ~500 sites per capture, 4 Chrome + 2 Firefox lanes (+ `SAFARI=1`) |
+| 2 | `make challenge NETWORK=home REPS=50` | no firewall |
+| 3 | `make challenge NETWORK=home REPS=50 FIREWALL=littlesnitch` | Little Snitch on, allow-all |
+| 4 | `make challenge NETWORK=home REPS=50 FIREWALL=lulu` | LuLu on (Little Snitch off) |
+| 5 | `sudo make parallel NETWORK=home REPEAT=2 DOH="on off"` | order swapped, another day |
+| 6 | `sudo make apps NETWORK=home` + `sudo make field` (2-3 sessions) | exploratory case studies for cross-process |
+| 7 | (if time) the same parallel run on campus | check resolver first |
 
-With a 2026-11-28 deadline, stop collecting by **2026-11-25** and analyse.
-Two home repeats + one other network is enough.
+Stop collecting by **2026-11-25**. The old sequential `sudo make workload` still
+works and now writes visit logs too; use it only as a control.
 
 ### P1, analysis (maximum results)
 
 1. `make report`; then rerun at `-eval-slack 0s` and `500ms` and show the headline doesn't move.
+   For challenge captures: `./ohmyosi -eval <cap> -truth <cap>.truth.json` per run, per firewall.
+   **Hand-check 50 randomly sampled "wrong" names in Wireshark** (hello, DNS
+   answers, certificate). Label each as a real error, coalescing, or a same-company
+   alias, and report the tool's precision. This is the human validation the
+   professor will value most.
 2. Headline numbers, each with Wilson CI and N:
    - correlation error and disagreement per strategy, per browser, DoH on/off, cold/warm;
-   - the Little Snitch step-2 share and step-2 disagreement (P0-1);
+   - the Little Snitch step-2 share and step-2 disagreement (now in `make report`);
+   - real Little Snitch / LuLu vs ground truth on the challenge suite (P0-2);
    - handshake-only share under DoH (the "blind" result);
    - cross-process rate (all runs, then apps/field separately);
    - GREASE ECH prevalence per browser (`ech_offered`/readable);
    - effective-PID coverage;
-   - coalescing three-way split (P0-2).
+   - coalescing three-way split (in `make report`);
+   - per-site median + IQR next to pooled rates (in `make report`).
 3. **Figures** (4–5): (a) correlation error by browser × DoH, with CIs;
    (b) cold vs warm; (c) causes stacked per condition; (d) per-app error for the
    app runs; (e) ours vs baselines (6%, <4%, 7.2%, 17%). Put numbers in the
@@ -193,10 +251,10 @@ Two home repeats + one other network is enough.
    the daemon with `-enforce` or evaluate with
    `-eval-block` on captures; browse with Firefox/Chrome DoH on vs off; count
    blocked names that still complete handshakes, per app.
-5. **(Optional, strong)** Run the real Little Snitch alongside a workload, export
-   its connection log, and compare its names with the SNI in our capture. That
-   turns "modelled" into "measured" and tests its own claim that
-   "Occasional wrong names are rare" (Linux FAQ).
+5. Real Little Snitch alongside the parallel browsing too, if its export works,
+   to test its own claim that "Occasional wrong names are rare, but inherent to the
+   technique: several names can point to the same IP address, and Little Snitch
+   shows the most recently looked up one." (Linux troubleshooting page, verified 2026-11-23.)
 
 ### P2, write the report (by 2026-11-27)
 
@@ -271,7 +329,9 @@ Tracexy).
 | Maghsoudlou et al., *FlowDNS*, CoNEXT 2022 | no ground truth; last-name-wins per IP | https://arxiv.org/pdf/2211.05682 |
 | Little Snitch 6 docs | "If the process can know only one name for the address, we are done, we have the name." | https://help.obdev.at/littlesnitch6/adv-server-names |
 | Little Snitch for Linux docs | "Both techniques are unreliable." | https://help.obdev.at/littlesnitch-linux/advanced-topics |
-| Little Snitch for Linux FAQ | "Occasional wrong names are rare, but inherent to the technique…" (from the novelty report; **re-fetch and verify**) | https://help.obdev.at/littlesnitch-linux/troubleshooting |
+| Little Snitch for Linux troubleshooting | "Occasional wrong names are rare, but inherent to the technique: several names can point to the same IP address," · "and Little Snitch shows the most recently looked up one." (verified 2026-11-23) | https://help.obdev.at/littlesnitch-linux/troubleshooting |
+| Little Snitch (macOS) FAQ | "By default, Little Snitch uses the server name that a process sends only if it matches a DNS lookup it has seen." Setting: Settings > Security > "Verify server names asserted by process" (verified 2026-11-23) | https://www.obdev.at/support/littlesnitch |
+| RFC 9113 §9.1.1 | HTTP/2 connection reuse across origins (coalescing): cite for treating coalesced disagreement as ambiguous | https://datatracker.ietf.org/doc/html/rfc9113#section-9.1.1 |
 | Portmaster docs | "This approach can sometimes lead the Portmaster to a wrong attribution of a domain to a connection." · "if two processes use two different domains but both of them point to the same IP address" | https://docs.safing.io/portmaster/architecture/os-integration |
 | Wireshark 4.6.0 release notes | "Wireshark can dissect process information, packet metadata, flow IDs, drop information, and other information provided by tcpdump on macOS" | https://www.wireshark.org/docs/relnotes/wireshark-4.6.0.html |
 | Corrata, *Living with ECH*, May 2025 | "In reality our data shows that only 0.06% of connections actually use it." | https://corrata.com/wp-content/uploads/2025/05/Living-with-ECH-May-25.pdf |
@@ -313,13 +373,15 @@ and IEEE Xplore were not checked directly.
 ```
 internal/naming/     ledger (DNS answers w/ TTL + asker; handshakes), Grade(), causes, Tally
 internal/eval/       eval.go (one capture, all strategies) · report.go (pooled, CSV, baselines)
+                     littlesnitch.go (documented LS model) · visits.go (visit log, lanes, per-site)
                      resolver.go (DDR/encrypted resolver detection) · prior.go · *_test.go
 internal/lab/        ground-truth capture builder; cmd/acn-lab writes lab.pcapng + truth
 internal/audit/      evasion detection, verified-address pf table, enforcement self-audit
 internal/decode/     sni.go quic.go hello.go (reassembly) ech.go (fronts, GREASE) ja4.go synth.go
 internal/pktap/      tcpdump reader (classic + Apple pcapng) · writer.go (lab pcapng)
 internal/flow/       flow table; attrib.go (effective-PID attribution)
-tools/workload/      run.sh (browsers) · apps.sh · ../field.sh
+tools/workload/      run.sh (sequential browsers) · apps.sh · parallel/ (lanes.mjs, run.sh) · ../field.sh
+cmd/acn-challenge/   live known-answer connections → truth file; tools/realtools/challenge.sh wraps it
 docs/ACN.md          method, claims, design, threats
 ```
 
