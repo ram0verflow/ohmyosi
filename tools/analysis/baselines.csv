@@ -1,0 +1,5 @@
+study,metric,theirs_pct,theirs_label,ours_pct,source
+Trevisan et al. 2016,SNI vs DNS inconsistency (flows),6,6%,11.9,make report AGAINST PUBLISHED BASELINES (internal/eval/report.go)
+Bermudez et al. 2012,possible label confusion (flows),4,<4%,11.9,make report AGAINST PUBLISHED BASELINES (internal/eval/report.go)
+Allman 2020,connections with no DNS,7.2,7.2%,45.9,make report AGAINST PUBLISHED BASELINES (internal/eval/report.go)
+Yu et al. 2023 (talk),connections with no DNS,27,27%,45.9,make report AGAINST PUBLISHED BASELINES (internal/eval/report.go)
