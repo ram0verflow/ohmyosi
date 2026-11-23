@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ohmyosi/internal/decode"
+	"ohmyosi/internal/enrich"
 	"ohmyosi/internal/naming"
 )
 
@@ -30,10 +31,57 @@ type Counts struct {
 	Coalesce     int                  `json:"coalesce_candidates"`
 	IPLiteral    int                  `json:"ip_literal"`
 	Causes       map[naming.Cause]int `json:"causes"` // last-answer
+	// Sibling: the correlated answer came from another process of the SAME
+	// app (two instances of one browser): not counted as cross-process.
+	Sibling int `json:"sibling_process"`
+
+	// Every strategy's displayed name graded against the flow's own
+	// handshake name, over readable flows: wrong (another name shown) and
+	// blind (nothing shown). Covers the Little Snitch models too.
+	SWrong map[string]int `json:"shown_wrong"`
+	SBlind map[string]int `json:"shown_blind"`
+
+	// The same, restricted to flows that are NOT coalescing candidates. An
+	// h2/h3 connection may legitimately carry several names (RFC 9113
+	// 9.1.1), so its "wrong" name is ambiguous, not necessarily an error.
+	// Coalescing-only figures are the difference between the two.
+	ReadableNC   int            `json:"readable_no_coalesce"`
+	ComparableNC int            `json:"comparable_no_coalesce"`
+	SWrongNC     map[string]int `json:"shown_wrong_no_coalesce"`
+	SBlindNC     map[string]int `json:"shown_blind_no_coalesce"`
+
+	// Little Snitch model (default settings), readable flows: which step
+	// named them, how often step 2's DNS-only name disagreed with the
+	// handshake, and how many handshake names step 3 refused.
+	LSSteps      map[int]int `json:"ls_steps"`
+	LSStep2Wrong int         `json:"ls_step2_wrong"`
+	LSRejected   int         `json:"ls_rejected"`
 }
 
 func newCounts() Counts {
-	return Counts{Wrong: map[string]int{}, Blind: map[string]int{}, Causes: map[naming.Cause]int{}}
+	return Counts{Wrong: map[string]int{}, Blind: map[string]int{}, Causes: map[naming.Cause]int{},
+		SWrong: map[string]int{}, SBlind: map[string]int{}, SWrongNC: map[string]int{}, SBlindNC: map[string]int{},
+		LSSteps: map[int]int{}}
+}
+
+// shownOutcome grades what strategy s displayed for a readable flow against
+// the flow's own handshake name: "agree", "wrong", "blind", or "" when the
+// flow has no trustworthy handshake name to grade against.
+func shownOutcome(r FlowResult, s string) string {
+	v := r.V()
+	if !(v.Class.Comparable() || v.Class == naming.HandshakeOnly) || v.Handshake == "" {
+		return ""
+	}
+	got := r.Shown[s]
+	switch {
+	case got.Name == "":
+		return "blind"
+	case got.Name == v.Handshake:
+		return "agree"
+	case got.Claim == "domain" && enrich.Registrable(v.Handshake) == got.Name:
+		return "agree"
+	}
+	return "wrong"
 }
 
 func (c *Counts) add(r FlowResult) {
@@ -56,6 +104,40 @@ func (c *Counts) add(r FlowResult) {
 	}
 	if v.CrossProcess && v.Class.Wrong() {
 		c.CrossProcess++
+	}
+	if v.SiblingProcess && v.Class.Wrong() {
+		c.Sibling++
+	}
+	coal := len(v.Coalesce) > 0
+	readable := v.Class.Comparable() || v.Class == naming.HandshakeOnly
+	if readable && !coal {
+		c.ReadableNC++
+		if v.Class.Comparable() {
+			c.ComparableNC++
+		}
+	}
+	for _, s := range Strategies {
+		switch shownOutcome(r, s) {
+		case "wrong":
+			c.SWrong[s]++
+			if !coal {
+				c.SWrongNC[s]++
+			}
+		case "blind":
+			c.SBlind[s]++
+			if !coal {
+				c.SBlindNC[s]++
+			}
+		}
+	}
+	if readable && r.LSStep > 0 {
+		c.LSSteps[r.LSStep]++
+		if r.LSStep == LSStepDNS && shownOutcome(r, StratLittleSnitch) == "wrong" {
+			c.LSStep2Wrong++
+		}
+		if r.LSRejected {
+			c.LSRejected++
+		}
 	}
 	if v.Class == naming.ECHOuter {
 		c.ECHOuter++
@@ -89,6 +171,19 @@ func (c *Counts) merge(o Counts) {
 		c.Causes[k] += v
 	}
 	c.CrossProcess += o.CrossProcess
+	c.Sibling += o.Sibling
+	c.ReadableNC += o.ReadableNC
+	c.ComparableNC += o.ComparableNC
+	for _, m := range []struct{ dst, src map[string]int }{{c.SWrong, o.SWrong}, {c.SBlind, o.SBlind}, {c.SWrongNC, o.SWrongNC}, {c.SBlindNC, o.SBlindNC}} {
+		for k, v := range m.src {
+			m.dst[k] += v
+		}
+	}
+	for k, v := range o.LSSteps {
+		c.LSSteps[k] += v
+	}
+	c.LSStep2Wrong += o.LSStep2Wrong
+	c.LSRejected += o.LSRejected
 	c.ECHOuter += o.ECHOuter
 	c.ECHOffered += o.ECHOffered
 	c.Coalesce += o.Coalesce
@@ -100,6 +195,15 @@ func (c Counts) Error(s string) (int, int) { return c.Wrong[s] + c.Blind[s], c.R
 
 // Disagreement is wrong over comparable flows (last-answer), as Trevisan 2016.
 func (c Counts) Disagreement() (int, int) { return c.Wrong[StratLastAnswer], c.Comparable }
+
+// DisagreementNC is Disagreement over flows that are not coalescing candidates.
+func (c Counts) DisagreementNC() (int, int) { return c.SWrongNC[StratLastAnswer], c.ComparableNC }
+
+// ShownError is wrong-or-blank over readable flows for any strategy s.
+func (c Counts) ShownError(s string) (int, int) { return c.SWrong[s] + c.SBlind[s], c.Readable }
+
+// ShownErrorNC is ShownError over flows that are not coalescing candidates.
+func (c Counts) ShownErrorNC(s string) (int, int) { return c.SWrongNC[s] + c.SBlindNC[s], c.ReadableNC }
 
 // RunSummary is one capture: its conditions and the counts for the process
 // family the workload drove ("focus") and for everything else on the machine.
@@ -114,6 +218,10 @@ type RunSummary struct {
 	Prior *PriorStats `json:"prior,omitempty"`
 	// NoPrior: a warm run whose cold capture was not found; evaluated alone.
 	NoPrior bool `json:"no_prior,omitempty"`
+	// Sites holds focus counts per visited site, when the run logged visits
+	// (<capture>.visits.tsv): hundreds of flows from one site are not
+	// hundreds of independent observations, so rates are also given per site.
+	Sites map[string]*Counts `json:"sites,omitempty"`
 }
 
 func (r RunSummary) m(k string) string {
@@ -190,20 +298,49 @@ func Summarize(dir string, slack time.Duration, progress io.Writer) ([]RunSummar
 			fmt.Fprintf(os.Stderr, "skip %s: %v\n", f, err)
 			continue
 		}
-		s := RunSummary{File: f, Manifest: rep.Manifest, Focus: newCounts(), Other: newCounts(), DNS: rep.DNS,
-			Prior: rep.Prior, NoPrior: mstr(m, "cache") == "warm" && cold == ""}
-		s.Subject = strings.ToLower(s.m("browser"))
-		if s.Subject == "" {
-			s.Subject = s.m("app")
+		// A parallel run holds several browsers in one capture: it becomes one
+		// summary per browser, each focused on that browser's processes.
+		subjects := []string{strings.ToLower(mstr(m, "browser"))}
+		if bs := mstr(m, "browsers"); bs != "" {
+			subjects = strings.Split(strings.ToLower(bs), ",")
 		}
-		for _, r := range rep.Results {
-			if inFamily(s.Subject, r.Comm) {
-				s.Focus.add(r)
-			} else {
-				s.Other.add(r)
+		visits, lanes := loadVisits(f, m)
+		for _, subject := range subjects {
+			man := rep.Manifest
+			if len(subjects) > 1 {
+				man = map[string]any{}
+				for k, v := range rep.Manifest {
+					man[k] = v
+				}
+				man["browser"] = subject
+				man["browser_version"] = rep.Manifest[subject+"_version"]
 			}
+			s := RunSummary{File: f, Manifest: man, Focus: newCounts(), Other: newCounts(), DNS: rep.DNS,
+				Prior: rep.Prior, NoPrior: mstr(m, "cache") == "warm" && cold == ""}
+			s.Subject = subject
+			if s.Subject == "" {
+				s.Subject = s.m("app")
+			}
+			fallback := onlyLane(m, subject)
+			for _, r := range rep.Results {
+				if inFamily(s.Subject, r.Comm) {
+					s.Focus.add(r)
+					if site := siteOf(visits, lanes, fallback, r); site != "" {
+						if s.Sites == nil {
+							s.Sites = map[string]*Counts{}
+						}
+						if s.Sites[site] == nil {
+							c := newCounts()
+							s.Sites[site] = &c
+						}
+						s.Sites[site].add(r)
+					}
+				} else {
+					s.Other.add(r)
+				}
+			}
+			out = append(out, s)
 		}
-		out = append(out, s)
 	}
 	return out, nil
 }
@@ -248,7 +385,11 @@ func PrintSummary(w io.Writer, runs []RunSummary) {
 	fmt.Fprintf(w, "  %-52s %6s %6s  %-20s %-20s %5s %6s %6s\n", "run", "flows", "read", "last-answer err", "per-process err", "xproc", "echout", "echoff")
 	for _, r := range runs {
 		f := r.Focus
-		fmt.Fprintf(w, "  %-52s %6d %6d  %-20s %-20s %5d %6d %6d\n", trunc(strings.TrimSuffix(filepath.Base(r.File), ".pcapng"), 52),
+		label := strings.TrimSuffix(filepath.Base(r.File), ".pcapng")
+		if r.m("browsers") != "" {
+			label += " [" + r.Subject + "]"
+		}
+		fmt.Fprintf(w, "  %-52s %6d %6d  %-20s %-20s %5d %6d %6d\n", trunc(label, 52),
 			f.Flows, f.Readable, PctCI(f.Error(StratLastAnswer)), PctCI(f.Error(StratPerProcess)), f.CrossProcess, f.ECHOuter, f.ECHOffered)
 	}
 	fmt.Fprintln(w, "  echout = ECH with a known front (excluded); echoff = ECH extension with a real SNI (GREASE; graded)")
@@ -291,6 +432,38 @@ func PrintSummary(w io.Writer, runs []RunSummary) {
 			fmt.Fprintf(w, "  %-28s %4s %6s  %-28s %-28s\n", "", "", "", "", s)
 		}
 	}
+
+	fmt.Fprintln(w, "\nCOALESCING SPLIT (last-answer disagreement; h2/h3 reuse may legitimately carry several names)")
+	fmt.Fprintf(w, "  %-28s %-26s %-26s %-22s\n", "condition", "all comparable", "excluding coalescing", "coalescing only")
+	for _, k := range keys {
+		c := newCounts()
+		for _, r := range groups[k] {
+			c.merge(r.Focus)
+		}
+		kw, kd := c.Disagreement()
+		nw, nd := c.DisagreementNC()
+		fmt.Fprintf(w, "  %-28s %-26s %-26s %-22s\n", trunc(k, 28), PctCI(kw, kd), PctCI(nw, nd), PctCI(kw-nw, kd-nd))
+	}
+
+	fmt.Fprintln(w, "\nEVERY STRATEGY vs THE HANDSHAKE NAME (all focus flows; error = wrong or blank over readable)")
+	fmt.Fprintf(w, "  %-26s %-24s %-24s %8s %8s\n", "strategy", "error", "error excl. coalescing", "wrong", "blank")
+	for _, st := range Strategies {
+		fmt.Fprintf(w, "  %-26s %-24s %-24s %8d %8d\n", st, PctCI(total.ShownError(st)), PctCI(total.ShownErrorNC(st)),
+			total.SWrong[st], total.SBlind[st])
+	}
+
+	fmt.Fprintln(w, "\nLITTLE SNITCH MODEL (macOS, documented steps, default verification; readable focus flows)")
+	fmt.Fprintln(w, "  step 1 (name from the Network Extension framework) is not observable: these figures bound its error from above")
+	ls := total.LSSteps[LSStepDNS] + total.LSSteps[LSStepSNI] + total.LSSteps[LSStepDomain] + total.LSSteps[LSStepAddress]
+	fmt.Fprintf(w, "  named at step 2 (app's single DNS name, handshake not checked) %s\n", PctCI(total.LSSteps[LSStepDNS], ls))
+	fmt.Fprintf(w, "    of which disagree with the handshake name                  %s\n", PctCI(total.LSStep2Wrong, total.LSSteps[LSStepDNS]))
+	fmt.Fprintf(w, "  named at step 3 (handshake name, verified against DNS)       %s\n", PctCI(total.LSSteps[LSStepSNI], ls))
+	fmt.Fprintf(w, "  common domain only (step 4)                                  %s\n", PctCI(total.LSSteps[LSStepDomain], ls))
+	fmt.Fprintf(w, "  address only                                                 %s\n", PctCI(total.LSSteps[LSStepAddress], ls))
+	fmt.Fprintf(w, "  readable handshake names refused by verification             %s\n", PctCI(total.LSRejected, ls))
+	fmt.Fprintf(w, "  borrowed between processes of the same app (not counted as cross-process): %d\n", total.Sibling)
+
+	printSites(w, keys, groups)
 
 	fmt.Fprintln(w, "\nCAUSES (last-answer, all focus flows)")
 	errs := 0
@@ -354,7 +527,12 @@ func WriteCSV(w io.Writer, runs []RunSummary) error {
 	head := []string{"file", "workload", "subject", "version", "doh", "cache", "network", "repeat",
 		"flows", "bytes", "readable", "comparable", "wrong_last_answer", "blind_last_answer",
 		"wrong_per_process", "blind_per_process", "cross_process", "ech_outer", "ech_offered", "coalesce", "ip_literal",
-		"dns_answers", "dns_effective", "resolver", "resolver_ddr", "resolver_encrypted", "prior_dns_answers"}
+		"dns_answers", "dns_effective", "resolver", "resolver_ddr", "resolver_encrypted", "prior_dns_answers",
+		"readable_no_coalesce", "comparable_no_coalesce", "wrong_last_answer_no_coalesce", "sibling_process",
+		"ls_step2", "ls_step3", "ls_step4", "ls_address", "ls_step2_wrong", "ls_rejected", "sites"}
+	for _, st := range Strategies {
+		head = append(head, "shown_wrong_"+st, "shown_blind_"+st)
+	}
 	for _, c := range naming.Causes {
 		head = append(head, "cause_"+string(c))
 	}
@@ -372,7 +550,13 @@ func WriteCSV(w io.Writer, runs []RunSummary) error {
 			itoa(f.Comparable), itoa(f.Wrong[StratLastAnswer]), itoa(f.Blind[StratLastAnswer]),
 			itoa(f.Wrong[StratPerProcess]), itoa(f.Blind[StratPerProcess]), itoa(f.CrossProcess),
 			itoa(f.ECHOuter), itoa(f.ECHOffered), itoa(f.Coalesce), itoa(f.IPLiteral), itoa(r.DNS.Answers), itoa(r.DNS.Effective),
-			r.m("resolver"), r.m("resolver_ddr"), r.m("resolver_encrypted"), priorCell(r)}
+			r.m("resolver"), r.m("resolver_ddr"), r.m("resolver_encrypted"), priorCell(r),
+			itoa(f.ReadableNC), itoa(f.ComparableNC), itoa(f.SWrongNC[StratLastAnswer]), itoa(f.Sibling),
+			itoa(f.LSSteps[LSStepDNS]), itoa(f.LSSteps[LSStepSNI]), itoa(f.LSSteps[LSStepDomain]), itoa(f.LSSteps[LSStepAddress]),
+			itoa(f.LSStep2Wrong), itoa(f.LSRejected), itoa(len(r.Sites))}
+		for _, st := range Strategies {
+			row = append(row, itoa(f.SWrong[st]), itoa(f.SBlind[st]))
+		}
 		for _, c := range naming.Causes {
 			row = append(row, itoa(f.Causes[c]))
 		}

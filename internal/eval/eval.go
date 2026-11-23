@@ -33,6 +33,7 @@ import (
 
 	"ohmyosi/internal/audit"
 	"ohmyosi/internal/decode"
+	"ohmyosi/internal/enrich"
 	"ohmyosi/internal/flow"
 	"ohmyosi/internal/naming"
 	"ohmyosi/internal/pktap"
@@ -59,9 +60,13 @@ const (
 	StratHeaderFirst = "header-first"
 	StratAddrCache   = "address-cache"
 	StratRead        = "read-first"
+	// Little Snitch on macOS by its documented steps (littlesnitch.go), with
+	// its default "Verify server names asserted by process" on and off.
+	StratLittleSnitch         = "littlesnitch-mac"
+	StratLittleSnitchNoVerify = "littlesnitch-mac-noverify"
 )
 
-var Strategies = []string{StratLastAnswer, StratPerProcess, StratHeaderFirst, StratAddrCache, StratRead}
+var Strategies = []string{StratLastAnswer, StratPerProcess, StratHeaderFirst, StratLittleSnitch, StratLittleSnitchNoVerify, StratAddrCache, StratRead}
 
 // Correlators are the strategies that name flows from DNS alone, and so can be
 // graded against the handshake name without ground truth.
@@ -89,6 +94,15 @@ type FlowResult struct {
 	Verdicts map[string]naming.Verdict `json:"verdicts"`
 	Shown    map[string]Shown          `json:"shown"`
 	Truth    *TruthEntry               `json:"truth,omitempty"`
+	// LSStep is the step of the modelled Little Snitch (default settings)
+	// that named this flow; LSRejected marks a handshake name it refused.
+	LSStep     int  `json:"ls_step,omitempty"`
+	LSRejected bool `json:"ls_rejected,omitempty"`
+	// Opened, Site and Lane place the flow in a workload's visit log, when
+	// the run recorded one, for per-site statistics.
+	Opened time.Time `json:"opened"`
+	Site   string    `json:"site,omitempty"`
+	Lane   string    `json:"lane,omitempty"`
 }
 
 // V is the last-answer verdict, the one comparable to published baselines.
@@ -103,6 +117,9 @@ type Score struct {
 	Missing  int    `json:"missing"`
 	// Misled: wrong names presented as read off the connection.
 	Misled int `json:"misled"`
+	// DomainLevel: counted correct, but only at the registrable domain (Little
+	// Snitch's step 4 shows a common domain rather than a host).
+	DomainLevel int `json:"domain_level,omitempty"`
 }
 
 // ProcRow breaks results down per process.
@@ -259,18 +276,21 @@ func Run(path string, opt Options) (*Report, error) {
 		// Safari as effective process, and mDNSResponder's answers carry Safari
 		// too; keying the flow by its owner would call every one of them
 		// cross-process.
-		app := pid
+		app, appComm := pid, f.DisplayComm()
 		if f.EPID > 0 {
 			app = f.EPID
+			if f.EComm != "" {
+				appComm = f.EComm
+			}
 		}
 		ev := naming.Evidence{Handshake: f.SNI, ECH: f.ECH, ECHOffered: f.ECHOffered, ALPN: f.ALPN, Unseen: f.PreExisting,
-			PID: app, Opened: f.FirstSeen, LastSeen: f.LastSeen}
+			PID: app, Comm: appComm, Opened: f.FirstSeen, LastSeen: f.LastSeen}
 		global := ledger.Correlate(ra, f.FirstSeen)
 		perProc := ledger.CorrelateFor(ra, f.FirstSeen, app)
 		r := FlowResult{
 			Key: Key(string(f.Proto), f.Local, f.Remote), Comm: f.DisplayComm(), PID: pid,
 			Unseen: f.PreExisting, Remote: ra, Bytes: f.BytesUp + f.BytesDown, ALPN: f.ALPN,
-			Answered: f.PktsDown > 0, Shown: map[string]Shown{},
+			Answered: f.PktsDown > 0, Shown: map[string]Shown{}, Opened: f.FirstSeen,
 			Verdicts: map[string]naming.Verdict{
 				StratLastAnswer: naming.Grade(ev, global, ledger, ra),
 				StratPerProcess: naming.Grade(ev, perProc, ledger, ra),
@@ -295,6 +315,11 @@ func Run(path string, opt Options) (*Report, error) {
 		} else {
 			r.Shown[StratHeaderFirst] = shown(perProc.Pick, "read")
 		}
+		// Little Snitch reads the SNI as sent, the ECH outer name included.
+		ls := littleSnitch(ledger, ra, f.FirstSeen, app, own, true)
+		r.Shown[StratLittleSnitch] = shownLS(ls)
+		r.LSStep, r.LSRejected = ls.Step, ls.Rejected
+		r.Shown[StratLittleSnitchNoVerify] = shownLS(littleSnitch(ledger, ra, f.FirstSeen, app, own, false))
 		switch {
 		case own != "":
 			r.Shown[StratAddrCache] = Shown{own, "read"}
@@ -379,6 +404,9 @@ func Run(path string, opt Options) (*Report, error) {
 				switch {
 				case got.Name == want:
 					sc.Correct++
+				case got.Claim == "domain" && want != "" && enrich.Registrable(want) == got.Name:
+					sc.Correct++
+					sc.DomainLevel++
 				case got.Name == "":
 					sc.Missing++
 				default:
@@ -561,9 +589,9 @@ func (r *Report) Print(w io.Writer) {
 
 	if len(r.Scores) > 0 {
 		fmt.Fprintln(w, "\nAGAINST GROUND TRUTH")
-		fmt.Fprintf(w, "  %-14s %5s %8s %6s %8s %7s\n", "strategy", "flows", "correct", "wrong", "missing", "misled")
+		fmt.Fprintf(w, "  %-26s %5s %8s %6s %8s %7s\n", "strategy", "flows", "correct", "wrong", "missing", "misled")
 		for _, s := range r.Scores {
-			fmt.Fprintf(w, "  %-14s %5d %8s %6d %8d %7d\n", s.Strategy, s.Flows, pct(s.Correct, s.Flows), s.Wrong, s.Missing, s.Misled)
+			fmt.Fprintf(w, "  %-26s %5d %8s %6d %8d %7d\n", s.Strategy, s.Flows, pct(s.Correct, s.Flows), s.Wrong, s.Missing, s.Misled)
 		}
 		fmt.Fprintln(w, "  misled = a wrong name presented as read off the connection")
 	}

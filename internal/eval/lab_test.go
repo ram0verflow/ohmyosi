@@ -80,6 +80,12 @@ func TestLabResults(t *testing.T) {
 	check(eval.StratHeaderFirst, 24, 1) // misled once: reports the ECH front as the destination
 	check(eval.StratAddrCache, 24, 3)
 	check(eval.StratRead, 25, 0) // never claims to have read a name it guessed
+	// Little Snitch by its documented steps. Default verification refuses every
+	// handshake name no lookup backs (DoH, cached, hardcoded, reused address),
+	// so it shows a bare address there; step 2 trusts the app's one lookup and
+	// is fooled by the shared Google edge and the same-site Notion host.
+	check(eval.StratLittleSnitch, 17, 2)
+	check(eval.StratLittleSnitchNoVerify, 23, 2)
 
 	// S9: an ECH extension with a real SNI (GREASE) is graded as read, not
 	// excluded as a front. Only S7's cloudflare-ech.com is ech-outer.

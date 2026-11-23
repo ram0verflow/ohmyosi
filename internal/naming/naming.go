@@ -214,6 +214,66 @@ func (c Correlation) Stale(t time.Time) bool {
 	return c.Pick != "" && c.PickTTL > 0 && t.After(c.PickAt.Add(time.Duration(c.PickTTL)*time.Second))
 }
 
+// NamesFor returns the distinct names pid had resolved to ip by time at -
+// "which process knows what", the input to Little Snitch's DNS sniffing.
+func (l *Ledger) NamesFor(ip netip.Addr, at time.Time, pid int32) []string {
+	if pid <= 0 {
+		return nil
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	cut := at.Add(l.Slack)
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range l.dns[ip] {
+		if a.at.After(cut) || a.asker != pid || seen[a.name] {
+			continue
+		}
+		seen[a.name] = true
+		out = append(out, a.name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Resolved reports whether any process's DNS answer mapped name to ip by
+// time at - the check behind Little Snitch's default "Verify server names
+// asserted by process".
+func (l *Ledger) Resolved(ip netip.Addr, name string, at time.Time) bool {
+	name = norm(name)
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	cut := at.Add(l.Slack)
+	for _, a := range l.dns[ip] {
+		if !a.at.After(cut) && a.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AppFamily reduces a process name to the application it belongs to, so the
+// helpers and instances of one app count as one: "Google Chrome He" and
+// "Google Chrome" are chrome; Safari's network process arrives truncated as
+// "com.apple.WebKi". Unknown names fall back to their first word.
+func AppFamily(comm string) string {
+	c := strings.ToLower(strings.TrimSpace(comm))
+	switch {
+	case c == "":
+		return ""
+	case strings.Contains(c, "chrome"):
+		return "chrome"
+	case strings.Contains(c, "firefox"), strings.Contains(c, "plugin-container"):
+		return "firefox"
+	case strings.Contains(c, "safari"), strings.HasPrefix(c, "com.apple.webki"):
+		return "safari"
+	}
+	if f := strings.Fields(c); len(f) > 0 {
+		return f[0]
+	}
+	return c
+}
+
 // Correlate answers as a last-answer-wins monitor would at time at, using
 // every process's lookups (OpenSnitch, Little Snitch for Linux).
 func (l *Ledger) Correlate(ip netip.Addr, at time.Time) Correlation {
@@ -302,8 +362,12 @@ type Evidence struct {
 	ALPN       string // "h2", "h3", "h1" or ""
 	Unseen     bool   // opened before capture began
 	PID        int32
-	Opened     time.Time
-	LastSeen   time.Time
+	// Comm is the flow's process name; with the lookup's process name it
+	// decides whether a borrowed answer crossed applications or only crossed
+	// two processes of the same application (two Chrome instances).
+	Comm     string
+	Opened   time.Time
+	LastSeen time.Time
 }
 
 // Verdict is the grade for one flow, with the evidence behind it.
@@ -312,10 +376,13 @@ type Verdict struct {
 	Handshake string `json:"handshake,omitempty"`
 	DNSPick   string `json:"dns_pick,omitempty"`
 	FanIn     int    `json:"fan_in,omitempty"`
-	// CrossProcess: the correlated answer was looked up for a different app.
-	CrossProcess bool   `json:"cross_process,omitempty"`
-	PickComm     string `json:"pick_comm,omitempty"`
-	Stale        bool   `json:"stale,omitempty"`
+	// CrossProcess: the correlated answer was looked up for a different
+	// application. SiblingProcess: for a different process of the SAME
+	// application (two browser instances), which is not borrowing between apps.
+	CrossProcess   bool   `json:"cross_process,omitempty"`
+	SiblingProcess bool   `json:"sibling_process,omitempty"`
+	PickComm       string `json:"pick_comm,omitempty"`
+	Stale          bool   `json:"stale,omitempty"`
 	// Reference-validity flags: the handshake name is not the destination
 	// (ECH, IP literal) or may not be the only one (coalescing).
 	ECH       bool `json:"ech,omitempty"`
@@ -332,7 +399,11 @@ func Grade(e Evidence, c Correlation, l *Ledger, ip netip.Addr) Verdict {
 	v := Verdict{Handshake: h, DNSPick: c.Pick, FanIn: len(c.Candidates), PickComm: c.PickComm, ECH: e.ECH,
 		ECHOffered: e.ECHOffered}
 	if c.Pick != "" && c.PickAsker > 0 && e.PID > 0 && c.PickAsker != e.PID {
-		v.CrossProcess = true
+		if e.Comm != "" && c.PickComm != "" && AppFamily(e.Comm) == AppFamily(c.PickComm) {
+			v.SiblingProcess = true
+		} else {
+			v.CrossProcess = true
+		}
 	}
 	v.Stale = c.Stale(e.Opened)
 	if _, err := netip.ParseAddr(h); err == nil && h != "" {
